@@ -7,9 +7,6 @@
 
 **Generic Agentic Intake Assistant**
 
-**Subtitle (optional):**  
-*A domain-agnostic agentic layer for structured intake, readiness evaluation, and system handoff.*
-
 ---
 
 ## 2. Project Purpose
@@ -125,8 +122,6 @@ This behavior goes beyond scripted chat and demonstrates **agentic decision-maki
 5. Readiness Assessment  
 6. Structured Summary & Handoff  
 
-(Each state will be detailed in subsequent documents.)
-
 ---
 
 ## 10. Output Definition (High Level)
@@ -140,8 +135,7 @@ The agent produces a **structured request summary**, which may include:
 - missing information (if any)  
 
 The output is designed to be consumed by:
-- NeoSublime  
-- Elevator Management Systems  
+- Small businesses  
 - Service Desk tools  
 - CRM systems  
 - Manual human review  
@@ -160,19 +154,7 @@ The project is considered successful if:
 
 ---
 
-## 12. Roles and Responsibilities (Your Positioning)
-
-In this project, you act as:
-
-- **Product Owner** – defining vision, scope, and success criteria  
-- **Business Analyst** – analyzing problems, structuring flows, defining outputs  
-- **AI / Systems Designer** – designing agentic behavior and architecture  
-
-This reflects modern, hybrid industry roles.
-
----
-
-## 13. Long-Term Vision (Optional)
+## 12. Long-Term Vision (Optional)
 
 The intake layer can later be:
 - adapted to specific domains (e.g., e-commerce, operations, support)  
@@ -182,7 +164,7 @@ The intake layer can later be:
 
 ---
 
-## 14. What This Project Is Not
+## 13. What This Project Is Not
 
 - Not a chatbot demo  
 - Not a static form replacement  
