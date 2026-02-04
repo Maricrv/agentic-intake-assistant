@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def utc_now_iso() -> str:
@@ -26,24 +26,31 @@ class Session:
 
 @dataclass
 class RequestDetails:
-    urgency: str = "not_provided"          # urgent | flexible | not_provided
-    timeline: str = "not_provided"         # within_24h | within_1_week | within_2_weeks | not_provided
-    location: str = "not_provided"         # free text
-    budget_range: str = "not_provided"     # e.g., "<50", "50-100", "100-300", "not_provided"
+    # Core business fields
+    issue_description: str = "not_provided"  # short problem description / user need
+    service_type: str = "not_provided"       # repair | installation | consultation | free text
+    urgency: str = "not_provided"            # urgent | flexible | not_provided
+    timeline: str = "not_provided"           # within_24h | within_1_week | within_2_weeks | not_provided
+    location: str = "not_provided"           # free text
+    budget_range: str = "not_provided"       # "<50", "50-100", "100-300", "not_provided"
     constraints: List[str] = field(default_factory=list)
+
+    # Optional metadata (kept minimal for now)
+    attachments: List[str] = field(default_factory=list)
 
 
 @dataclass
 class Request:
     request_type: str = "service_request"
     service_category: str = "generic_service"
+    intent_id: str = "fallback_unknown"      # which intent/flow was selected
     summary: str = ""
     details: RequestDetails = field(default_factory=RequestDetails)
 
 
 @dataclass
 class Readiness:
-    status: str = "not_ready"              # ready | not_ready | not_a_fit
+    status: str = "not_ready"  # ready | not_ready | not_a_fit
     missing_fields: List[str] = field(default_factory=list)
     inconsistencies: List[str] = field(default_factory=list)
     notes: str = ""
@@ -65,7 +72,7 @@ class Audit:
 
 @dataclass
 class IntakeResult:
-    schema_version: str = "1.0"
+    schema_version: str = "1.1"
     request_id: str = "req_local_000001"
     channel: Channel = field(default_factory=Channel)
     session: Session = field(default_factory=Session)

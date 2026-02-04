@@ -1,6 +1,6 @@
 {
   "domain": "generic_intake",
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "defaults": {
     "language": "en",
     "service_category": "generic_service",
@@ -15,9 +15,30 @@
       "label": "Service request / booking",
       "priority": 100,
       "match": {
-        "keywords_any": ["repair", "rapair", "install", "installation", "fix", "quote", "book", "support", "help", "service"]
+        "keywords_any": [
+          "repair",
+          "rapair",
+          "install",
+          "installation",
+          "fix",
+          "quote",
+          "book",
+          "support",
+          "help",
+          "service",
+          "broken",
+          "not working",
+          "issue",
+          "problem"
+        ]
       },
       "flow": [
+        {
+          "field": "issue_description",
+          "question": "Tell me briefly what you need help with today.",
+          "required": true,
+          "normalize": "text"
+        },
         {
           "field": "service_type",
           "question": "What type of service are you looking for? (repair, installation, consultation, etc.)",
@@ -27,7 +48,7 @@
         {
           "field": "urgency",
           "question": "Is this urgent or flexible? (urgent/flexible)",
-          "required": false,
+          "required": true,
           "normalize": "urgency"
         },
         {
@@ -65,7 +86,19 @@
       "label": "Informational question",
       "priority": 80,
       "match": {
-        "starts_with_any": ["what is", "how do", "how does", "price list", "hours", "location", "address"]
+        "starts_with_any": [
+          "what is",
+          "how do",
+          "how does",
+          "can you explain",
+          "do you offer",
+          "pricing",
+          "price list",
+          "hours",
+          "opening hours",
+          "where are you located",
+          "what is your address"
+        ]
       },
       "handoff": {
         "recommended_action": "completed",
@@ -86,21 +119,32 @@
     }
   ],
   "normalizers": {
+    "service_type": {
+      "repair": ["repair", "fix", "broken", "not working"],
+      "installation": ["install", "installation", "setup", "set up"],
+      "consultation": ["consultation", "advice", "assessment", "estimate"]
+    },
     "urgency": {
-      "urgent": ["urgent", "asap", "emergency", "right now"],
-      "flexible": ["flexible", "whenever", "no rush"]
+      "urgent": ["urgent", "asap", "emergency", "right now", "immediately", "today"],
+      "flexible": ["flexible", "whenever", "no rush", "not urgent", "later"]
     },
     "timeline": {
       "within_24h": ["within_24h", "24h", "24 hours", "within 24 hours", "today", "1 day", "tomorrow"],
-      "within_1_week": ["within_1_week", "1 week", "within 1 week", "this week", "7 days"],
+      "within_1_week": ["within_1_week", "1 week", "within 1 week", "this week", "7 days", "soon"],
       "within_2_weeks": ["within_2_weeks", "2 weeks", "within 2 weeks", "14 days"]
     },
     "budget": {
       "<50": ["<50", "under 50", "less than 50"],
       "50-100": ["50-100", "between 50 and 100"],
       "100-300": ["100-300", "between 100 and 300"],
-      "not_provided": ["not sure", "unknown", "n/a"]
+      "not_provided": ["not sure", "unknown", "n/a", "na"]
     },
     "constraints_ignore": ["yes", "no", "ok", "okay", "none", "na", "n/a"]
-  }
+  },
+  "llm": {
+  "enabled": true,
+  "model": "gpt-5",
+  "reasoning_effort": "low"
+}
+
 }
