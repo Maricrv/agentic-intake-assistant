@@ -1,0 +1,106 @@
+{
+  "domain": "generic_intake",
+  "schema_version": "1.0",
+  "defaults": {
+    "language": "en",
+    "service_category": "generic_service",
+    "handoff": {
+      "recommended_action": "route_human",
+      "routing_hint": "human_review"
+    }
+  },
+  "intents": [
+    {
+      "id": "service_request",
+      "label": "Service request / booking",
+      "priority": 100,
+      "match": {
+        "keywords_any": ["repair", "rapair", "install", "installation", "fix", "quote", "book", "support", "help", "service"]
+      },
+      "flow": [
+        {
+          "field": "service_type",
+          "question": "What type of service are you looking for? (repair, installation, consultation, etc.)",
+          "required": true,
+          "normalize": "service_type"
+        },
+        {
+          "field": "urgency",
+          "question": "Is this urgent or flexible? (urgent/flexible)",
+          "required": false,
+          "normalize": "urgency"
+        },
+        {
+          "field": "timeline",
+          "question": "When do you want this addressed? (within_24h / within_1_week / within_2_weeks)",
+          "required": false,
+          "normalize": "timeline"
+        },
+        {
+          "field": "location",
+          "question": "What is your location (city/country)?",
+          "required": true,
+          "normalize": "text"
+        },
+        {
+          "field": "budget_range",
+          "question": "Do you have a budget range? (example: <50, 50-100, 100-300, not sure)",
+          "required": false,
+          "normalize": "budget"
+        },
+        {
+          "field": "constraints",
+          "question": "Any constraints or notes? (optional)",
+          "required": false,
+          "normalize": "constraints"
+        }
+      ],
+      "handoff": {
+        "recommended_action": "route_human",
+        "routing_hint": "human_review"
+      }
+    },
+    {
+      "id": "general_question",
+      "label": "Informational question",
+      "priority": 80,
+      "match": {
+        "starts_with_any": ["what is", "how do", "how does", "price list", "hours", "location", "address"]
+      },
+      "handoff": {
+        "recommended_action": "completed",
+        "routing_hint": "informational"
+      }
+    },
+    {
+      "id": "fallback_unknown",
+      "label": "Unknown / needs clarification",
+      "priority": 10,
+      "match": {
+        "always": true
+      },
+      "handoff": {
+        "recommended_action": "ask_follow_up",
+        "routing_hint": "human_review"
+      }
+    }
+  ],
+  "normalizers": {
+    "urgency": {
+      "urgent": ["urgent", "asap", "emergency", "right now"],
+      "flexible": ["flexible", "whenever", "no rush"]
+    },
+    "timeline": {
+      "within_24h": ["within_24h", "24h", "24 hours", "within 24 hours", "today", "1 day", "tomorrow"],
+      "within_1_week": ["within_1_week", "1 week", "within 1 week", "this week", "7 days"],
+      "within_2_weeks": ["within_2_weeks", "2 weeks", "within 2 weeks", "14 days"]
+    },
+    "budget": {
+      "<50": ["<50", "under 50", "less than 50"],
+      "50-100": ["50-100", "between 50 and 100"],
+      "100-300": ["100-300", "between 100 and 300"],
+      "not_provided": ["not sure", "unknown", "n/a"]
+    },
+    "constraints_ignore": ["yes", "no", "ok", "okay", "none", "na", "n/a"]
+  }
+}
