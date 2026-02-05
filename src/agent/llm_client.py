@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Optional
-
-from openai import OpenAI
+from typing import Optional, Any
 
 
 @dataclass
@@ -27,21 +25,39 @@ class LLMClient:
         self.model = model or "gpt-5"
         self.reasoning_effort = reasoning_effort or "low"
 
-        self._client: Optional[OpenAI] = None
+        # NOTE: Use Any to avoid hard dependency on OpenAI types.
+        self._client: Optional[Any] = None
+
         if self.enabled:
+            # Lazy import: avoids crashing when openai isn't installed but LLM is disabled.
+            try:
+                from openai import OpenAI  # type: ignore
+            except ModuleNotFoundError as e:
+                raise ModuleNotFoundError(
+                    "Missing dependency 'openai'. Install it (e.g., pip install openai) "
+                    "or disable LLM in configs."
+                ) from e
+
             self._client = OpenAI()
 
     def _call_text(self, instructions: str, user_input: str) -> str:
+        """
+        Returns model output_text or "" on any error.
+        Keeps the system resilient even if SDK/model settings are not available.
+        """
         if not self._client:
             return ""
 
-        resp = self._client.responses.create(
-            model=self.model,
-            reasoning={"effort": self.reasoning_effort},
-            instructions=instructions,
-            input=user_input,
-        )
-        return (resp.output_text or "").strip()
+        try:
+            resp = self._client.responses.create(
+                model=self.model,
+                reasoning={"effort": self.reasoning_effort},
+                instructions=instructions,
+                input=user_input,
+            )
+            return (resp.output_text or "").strip()
+        except Exception:
+            return ""
 
     # -----------------------------
     # Location correction (primary)
@@ -50,6 +66,11 @@ class LLMClient:
         """
         Returns a single corrected location string or None.
         Conservative: returns None if not confident.
+
+        Expected output format preference:
+          - City
+          - City, Country
+        Prefer shortest unambiguous form.
         """
         if not self.enabled:
             return None
@@ -60,6 +81,10 @@ class LLMClient:
 
         instructions = (
             "You are helping clean a user's location field.\n"
+            "Return a normalized location in ONE of these formats:\n"
+            "  - City\n"
+            "  - City, Country\n"
+            "Prefer the shortest unambiguous form.\n\n"
             "Return ONLY a JSON object with keys:\n"
             "  - suggestion: string (corrected location)\n"
             "  - confidence: number from 0 to 1\n"
@@ -94,17 +119,15 @@ class LLMClient:
         return LLMResponse(text=suggestion)
 
     # -----------------------------------------
-    # ✅ Backward-compatible alias (fix your bug)
+    # Backward-compatible alias (your code uses this)
     # -----------------------------------------
     def suggest_location_correction(self, value: str) -> Optional[LLMResponse]:
-        """
-        Compatibility alias. Some parts of the codebase may call this older name.
-        """
         return self.suggest_correction_location(value)
 
-    
+    # -----------------------------------------
+    # Service type correction (closed set)
+    # -----------------------------------------
     def suggest_service_type_correction(self, value: str, allowed: list[str]) -> Optional[LLMResponse]:
-    
         """
         Suggest a corrected service_type from a closed set (allowed).
         Returns None if not confident.
@@ -127,7 +150,7 @@ class LLMClient:
             "Do NOT add any extra text."
         )
 
-        user_input = f'Allowed: {allowed}\nUser entered: "{value}"'
+        user_input = f"Allowed: {allowed}\nUser entered: \"{value}\""
         text = self._call_text(instructions, user_input)
         if not text:
             return None
