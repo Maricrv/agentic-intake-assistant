@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def utc_now_iso() -> str:
@@ -26,26 +26,27 @@ class Session:
 
 @dataclass
 class RequestDetails:
-    # Core business fields
-    issue_description: str = "not_provided"  # short problem description / user need
-    service_type: str = "not_provided"       # repair | installation | consultation | free text
+    issue_description: str = "not_provided"
+    service_type: str = "not_provided"       # repair | installation | maintenance | consultation
     urgency: str = "not_provided"            # urgent | flexible | not_provided
     timeline: str = "not_provided"           # within_24h | within_1_week | within_2_weeks | not_provided
     location: str = "not_provided"           # free text
-    budget_range: str = "not_provided"       # "<50", "50-100", "100-300", "not_provided"
+    budget_range: str = "not_provided"       # "<50" | "50-100" | "100-300" | "300-500" | "500-1000" | not_provided
     constraints: List[str] = field(default_factory=list)
-
-    # Optional metadata (kept minimal for now)
     attachments: List[str] = field(default_factory=list)
 
 
 @dataclass
 class Request:
-    request_type: str = "service_request"
-    service_category: str = "generic_service"
-    intent_id: str = "fallback_unknown"      # which intent/flow was selected
+    request_type: str = "pre_quote"
+    service_category: str = "technical_services"
+    intent_id: str = "fallback_unknown"
     summary: str = ""
     details: RequestDetails = field(default_factory=RequestDetails)
+
+    # ✅ Product-grade traceability
+    decision_log: List[str] = field(default_factory=list)
+    sources: Dict[str, Any] = field(default_factory=dict)  # e.g., {"prefill": true, "llm_used": ["location_correction"]}
 
 
 @dataclass
@@ -72,7 +73,7 @@ class Audit:
 
 @dataclass
 class IntakeResult:
-    schema_version: str = "1.1"
+    schema_version: str = "1.2"
     request_id: str = "req_local_000001"
     channel: Channel = field(default_factory=Channel)
     session: Session = field(default_factory=Session)

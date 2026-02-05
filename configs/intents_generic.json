@@ -1,9 +1,9 @@
 {
-  "domain": "generic_intake",
+  "domain": "pre_quote_intake",
   "schema_version": "1.1",
   "defaults": {
     "language": "en",
-    "service_category": "generic_service",
+    "service_category": "technical_services",
     "handoff": {
       "recommended_action": "route_human",
       "routing_hint": "human_review"
@@ -11,9 +11,10 @@
   },
   "intents": [
     {
-      "id": "service_request",
-      "label": "Service request / booking",
+      "id": "pre_quote_request",
+      "label": "Pre-quotation request",
       "priority": 100,
+      "service_category": "technical_services",
       "match": {
         "keywords_any": [
           "repair",
@@ -35,20 +36,20 @@
       "flow": [
         {
           "field": "issue_description",
-          "question": "Tell me briefly what you need help with today.",
+          "question": "Tell me briefly what you need help with so we can prepare a pre-quotation.",
           "required": true,
           "normalize": "text"
         },
         {
           "field": "service_type",
-          "question": "What type of service are you looking for? (repair, installation, consultation, etc.)",
+          "question": "What type of service is this? (repair / installation / maintenance / consultation)",
           "required": true,
           "normalize": "service_type"
         },
         {
           "field": "urgency",
           "question": "Is this urgent or flexible? (urgent/flexible)",
-          "required": true,
+          "required": false,
           "normalize": "urgency"
         },
         {
@@ -65,13 +66,13 @@
         },
         {
           "field": "budget_range",
-          "question": "Do you have a budget range? (example: <50, 50-100, 100-300, not sure)",
+          "question": "Do you have an estimated budget? (example: <50, 50-100, 100-300, 300-500, 500-1000, not sure)",
           "required": false,
           "normalize": "budget"
         },
         {
           "field": "constraints",
-          "question": "Any constraints or notes? (optional)",
+          "question": "Any constraints or notes? (building access hours, parking, safety rules, etc.)",
           "required": false,
           "normalize": "constraints"
         }
@@ -122,6 +123,7 @@
     "service_type": {
       "repair": ["repair", "fix", "broken", "not working"],
       "installation": ["install", "installation", "setup", "set up"],
+      "maintenance": ["maintenance", "service visit", "preventive"],
       "consultation": ["consultation", "advice", "assessment", "estimate"]
     },
     "urgency": {
@@ -137,14 +139,15 @@
       "<50": ["<50", "under 50", "less than 50"],
       "50-100": ["50-100", "between 50 and 100"],
       "100-300": ["100-300", "between 100 and 300"],
+      "300-500": ["300-500", "between 300 and 500"],
+      "500-1000": ["500-1000", "between 500 and 1000"],
       "not_provided": ["not sure", "unknown", "n/a", "na"]
     },
     "constraints_ignore": ["yes", "no", "ok", "okay", "none", "na", "n/a"]
   },
   "llm": {
-  "enabled": true,
-  "model": "gpt-5",
-  "reasoning_effort": "low"
-}
-
+    "enabled": true,
+    "model": "gpt-5",
+    "reasoning_effort": "low"
+  }
 }

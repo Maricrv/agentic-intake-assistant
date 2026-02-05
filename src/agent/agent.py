@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from .schema import IntakeResult
 from .llm_client import LLMClient
 from .field_corrector import FieldCorrector
+from .field_extractor import extract_prefill
 
 
 @dataclass
@@ -65,6 +66,9 @@ class GenericIntakeAgent:
         self.memory.setdefault("last_state", "S0")
         self.memory.setdefault("last_intent_id", None)
 
+        # ✅ initialize sources
+        self.result.request.sources = {"prefill": False, "llm_used": []}
+
     def export_state(self) -> dict:
         self.memory["last_state"] = self.state.name
         return self.memory
@@ -82,6 +86,12 @@ class GenericIntakeAgent:
 
     def _norm_lc(self, s: str) -> str:
         return self._norm_text(s).lower()
+
+    def _log(self, msg: str) -> None:
+        self.result.request.decision_log.append(msg)
+
+    def _add_inconsistency(self, msg: str) -> None:
+        self.result.readiness.inconsistencies.append(msg)
 
     def _is_valid_service_type(self, text: str) -> bool:
         t = (text or "").lower().strip()
@@ -125,17 +135,82 @@ class GenericIntakeAgent:
 
         if candidates:
             candidates.sort(key=lambda x: x[0], reverse=True)
-            return candidates[0][1]
+            chosen = candidates[0][1]
+            self._log(f"intent_selected: {chosen.get('id')} (rule_match)")
+            return chosen
 
         for it in intents:
-            if it.get("id") == "service_request":
+            if it.get("id") == "pre_quote_request":
+                self._log("intent_selected: pre_quote_request (default)")
                 return it
 
         if always_intents:
             always_intents.sort(key=lambda x: x[0], reverse=True)
-            return always_intents[0][1]
+            chosen = always_intents[0][1]
+            self._log(f"intent_selected: {chosen.get('id')} (always)")
+            return chosen
 
+        self._log("intent_selected: fallback_unknown (no_match)")
         return {"id": "fallback_unknown", "flow": []}
+
+    def _infer_service_type_from_text(self, text: str) -> str:
+        tl = self._norm_lc(text)
+        table = (self.intent_config or {}).get("normalizers", {}).get("service_type", {}) or {}
+
+        candidates: List[tuple[int, str, str]] = []
+        for canonical, synonyms in table.items():
+            for s in (synonyms or []):
+                phrase = str(s).lower().strip()
+                if phrase and phrase in tl:
+                    candidates.append((len(phrase), canonical, phrase))
+
+        if not candidates:
+            return "not_provided"
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        _, canonical, phrase = candidates[0]
+        self._log(f"service_type_inferred: {canonical} (matched_phrase='{phrase}')")
+        return canonical
+
+    def _apply_prefill(self, intent: Dict[str, Any], field: str, value: str) -> None:
+        value = self._norm_text(value)
+        if not value:
+            return
+
+        # record source
+        self.result.request.sources["prefill"] = True
+
+        if field == "location":
+            normalizer = self._normalizer_for_field(intent, field)
+            norm = self._normalize_value(normalizer, value)
+            if norm != "not_provided":
+                self.result.request.details.location = norm
+                self._log(f"prefill: location='{norm}'")
+            return
+
+        if field == "timeline":
+            norm = self._normalize_value("timeline", value)
+            if norm != "not_provided":
+                self.result.request.details.timeline = norm
+                self._log(f"prefill: timeline='{norm}'")
+            return
+
+        if field == "budget_range":
+            norm = self._normalize_value("budget", value)
+            if norm != "not_provided":
+                self.result.request.details.budget_range = norm
+                self._log(f"prefill: budget_range='{norm}'")
+            return
+
+        if field == "urgency":
+            norm = self._normalize_value("urgency", value)
+            if norm != "not_provided":
+                self.result.request.details.urgency = norm
+                self._log(f"prefill: urgency='{norm}'")
+            return
+
+        # fallback
+        self._apply_field(intent, field, value)
 
     def _extract_first_int(self, text: str) -> Optional[int]:
         m = re.search(r"(\d+)", text or "")
@@ -156,17 +231,14 @@ class GenericIntakeAgent:
         norms = (self.intent_config or {}).get("normalizers", {})
         table = norms.get(kind, {}) or {}
 
-        # Match by synonyms (exact)
         for canonical, synonyms in table.items():
             for s in synonyms or []:
                 if raw_lc == str(s).lower().strip():
                     return canonical
 
-        # Allow typing canonical
         if raw_clean in table:
             return raw_clean
 
-        # --- Budget: allow "yes, 20" / "$20" / "around 20" ---
         if kind == "budget":
             n = self._extract_first_int(raw_lc)
             if n is not None:
@@ -176,21 +248,40 @@ class GenericIntakeAgent:
                     return "50-100"
                 if 100 < n <= 300:
                     return "100-300"
+                if 300 < n <= 500:
+                    return "300-500"
+                return "500-1000"
             return "not_provided"
 
-        # Timeline parsing
         if kind == "timeline":
             t = raw_lc
-            if "today" in t or "tomorrow" in t or "within_24h" in t:
+            if "today" in t or "tomorrow" in t or "within_24h" in t or "within 24" in t or "24h" in t:
                 return "within_24h"
-            if ("hour" in t or "hrs" in t or "hr" in t) and any(ch.isdigit() for ch in t):
-                return "within_24h"
-            if "day" in t and any(ch.isdigit() for ch in t):
-                return "within_1_week"
+
+            m = re.search(r"(\d+)\s*(day|days|d)\b", t)
+            if m:
+                try:
+                    days = int(m.group(1))
+                    if days <= 1:
+                        return "within_24h"
+                    if days <= 7:
+                        return "within_1_week"
+                    if days <= 14:
+                        return "within_2_weeks"
+                except Exception:
+                    pass
+
             if "week" in t:
                 if "2" in t or "two" in t:
                     return "within_2_weeks"
                 return "within_1_week"
+
+            if "within_1_week" in t:
+                return "within_1_week"
+            if "within_2_weeks" in t:
+                return "within_2_weeks"
+
+            return "not_provided"
 
         return "not_provided"
 
@@ -200,8 +291,6 @@ class GenericIntakeAgent:
             return ""
 
         raw_lc = self._norm_lc(raw_clean)
-
-        # NEW: ignore "no ..." answers (no, no now, no constraints, etc.)
         if raw_lc.startswith("no"):
             return ""
 
@@ -217,17 +306,17 @@ class GenericIntakeAgent:
             if step.get("field") == field and step.get("question"):
                 return str(step["question"])
         if field == "service_type":
-            return "What type of service are you looking for? (repair, installation, consultation, etc.)"
+            return "What type of service is this? (repair / installation / maintenance / consultation)"
         if field == "location":
             return "What is your location (city/country)?"
         if field == "budget_range":
-            return "Do you have a budget range? (example: <50, 50-100, 100-300, not sure)"
+            return "Do you have an estimated budget? (example: <50, 50-100, 100-300, 300-500, 500-1000, not sure)"
         if field == "timeline":
             return "When do you want this addressed? (within_24h / within_1_week / within_2_weeks)"
         if field == "urgency":
             return "Is this urgent or flexible? (urgent/flexible)"
         if field == "issue_description":
-            return "Tell me briefly what you need help with today."
+            return "Tell me briefly what you need help with so we can prepare a pre-quotation."
         return f"Please provide: {field}"
 
     def _required_fields_from_intent(self, intent: Dict[str, Any]) -> List[str]:
@@ -244,47 +333,116 @@ class GenericIntakeAgent:
         return "text"
 
     def _apply_field(self, intent: Dict[str, Any], field: str, raw: str) -> None:
+        # If user entered empty, do NOT overwrite an existing value
+        if not self._norm_text(raw):
+            return
+
+        d = self.result.request.details
         normalizer = self._normalizer_for_field(intent, field)
 
+        # --- constraints ---
         if field == "constraints":
             val = self._normalize_constraints(raw)
             if val:
-                self.result.request.details.constraints.append(val)
+                d.constraints.append(val)
+                self._log(f"user_set: constraints += '{val}'")
             return
 
+        # --- issue_description ---
         if field == "issue_description":
             val = self._normalize_value(normalizer, raw)
             self.memory["collected"]["issue_description"] = val
-            self.result.request.details.issue_description = val
+            d.issue_description = val
+            self._log("user_set: issue_description")
             return
 
+        # --- service_type ---
         if field == "service_type":
             val = self._normalize_value("service_type", raw)
-            if val != "not_provided" and self._is_valid_service_type(val):
-                self.memory["collected"]["service_type"] = val
-                self.result.request.details.service_type = val
-                self.result.request.summary = f"User is requesting: {val}"
+            if val == "not_provided" or not self._is_valid_service_type(val):
+                return
+
+            # inconsistency check
+            if d.service_type != "not_provided" and self._norm_lc(d.service_type) != self._norm_lc(val):
+                self._add_inconsistency(f"service_type_conflict: kept '{d.service_type}', ignored '{val}'")
+                self._log(f"inconsistency: service_type '{d.service_type}' vs '{val}'")
+                return
+
+            self.memory["collected"]["service_type"] = val
+            d.service_type = val
+            self.result.request.summary = f"Pre-quote for: {val}"
+            self._log(f"user_set: service_type='{val}'")
             return
 
+        # --- urgency ---
         if field == "urgency":
-            self.result.request.details.urgency = self._normalize_value("urgency", raw)
+            val = self._normalize_value("urgency", raw)
+            if val == "not_provided":
+                return
+
+            if d.urgency != "not_provided" and d.urgency != val:
+                self._add_inconsistency(f"urgency_conflict: kept '{d.urgency}', ignored '{val}'")
+                self._log(f"inconsistency: urgency '{d.urgency}' vs '{val}'")
+                return
+
+            d.urgency = val
+            self._log(f"user_set: urgency='{val}'")
             return
 
+        # --- timeline ---
         if field == "timeline":
-            self.result.request.details.timeline = self._normalize_value("timeline", raw)
+            val = self._normalize_value("timeline", raw)
+            if val == "not_provided":
+                return
+
+            if d.timeline != "not_provided" and d.timeline != val:
+                self._add_inconsistency(f"timeline_conflict: kept '{d.timeline}', ignored '{val}'")
+                self._log(f"inconsistency: timeline '{d.timeline}' vs '{val}'")
+                return
+
+            d.timeline = val
+            self._log(f"user_set: timeline='{val}'")
             return
 
+        # --- location ---
         if field == "location":
+            # LLM correction (if enabled)
             corrected = self.corrector.maybe_correct_location_with_confirmation(raw)
             raw_to_use = corrected if corrected else raw
+            if corrected:
+                if "location_correction" not in self.result.request.sources.get("llm_used", []):
+                    self.result.request.sources["llm_used"].append("location_correction")
+                self._log(f"llm_suggestion_accepted: location='{corrected}'")
+
             val = self._normalize_value(normalizer, raw_to_use)
-            self.result.request.details.location = val if val != "not_provided" else "not_provided"
+            if val == "not_provided":
+                return
+
+            if d.location != "not_provided" and self._norm_lc(d.location) != self._norm_lc(val):
+                self._add_inconsistency(f"location_conflict: kept '{d.location}', ignored '{val}'")
+                self._log(f"inconsistency: location '{d.location}' vs '{val}'")
+                return
+
+            d.location = val
+            self._log(f"user_set: location='{val}'")
             return
 
+        # --- budget_range ---
         if field == "budget_range":
-            self.result.request.details.budget_range = self._normalize_value("budget", raw)
+            val = self._normalize_value("budget", raw)
+            if val == "not_provided":
+                return
+
+            if d.budget_range != "not_provided" and d.budget_range != val:
+                self._add_inconsistency(f"budget_conflict: kept '{d.budget_range}', ignored '{val}'")
+                self._log(f"inconsistency: budget '{d.budget_range}' vs '{val}'")
+                return
+
+            d.budget_range = val
+            self._log(f"user_set: budget_range='{val}'")
             return
 
+        # fallback
         self.memory["collected"][field] = self._normalize_value(normalizer, raw)
 
     def _ask_and_apply_followups(self, intent: Dict[str, Any], missing_fields: List[str]) -> None:
@@ -314,7 +472,7 @@ class GenericIntakeAgent:
 
     def run(self) -> IntakeResult:
         self._set_state(S0)
-        print("I can help you prepare a service request. I’ll ask a few quick questions to understand your needs.\n")
+        print("I can help you prepare a pre-quotation request. I’ll ask a few quick questions to understand your needs.\n")
 
         intents = self.intent_config.get("intents", []) or []
         pending = self.memory.get("missing_fields", []) or []
@@ -358,7 +516,10 @@ class GenericIntakeAgent:
                 missing_now = self._compute_missing_fields(required_fields=required_fields)
 
             if missing_now:
-                self._finalize(not_ready_fields=missing_now, next_qs=self._questions_for_missing(missing_now, last_intent))
+                self._finalize(
+                    not_ready_fields=missing_now,
+                    next_qs=self._questions_for_missing(missing_now, last_intent),
+                )
             else:
                 self.memory["missing_fields"] = []
                 self.result.readiness.status = "ready"
@@ -373,14 +534,27 @@ class GenericIntakeAgent:
 
         self._set_state(S1)
 
-        issue_q = "Tell me briefly what you need help with today."
+        issue_q = "Tell me briefly what you need help with so we can prepare a pre-quotation."
         for it in intents:
-            if it.get("id") == "service_request":
+            if it.get("id") == "pre_quote_request":
                 issue_q = self._question_for_field(it, "issue_description")
                 break
 
         first_text = self._ask(issue_q)
         self._apply_field({"flow": [{"field": "issue_description", "normalize": "text"}]}, "issue_description", first_text)
+
+        # Prefill
+        prefill = extract_prefill(first_text)
+        if prefill:
+            self._log("prefill: extracted_fields_from_first_message")
+            for k, v in prefill.items():
+                norm_map = {
+                    "timeline": "timeline",
+                    "budget_range": "budget",
+                    "urgency": "urgency",
+                    "location": "text",
+                }
+                self._apply_prefill({"flow": [{"field": k, "normalize": norm_map.get(k, "text")}]}, k, v)
 
         intent = self._pick_intent(first_text)
         intent_id = intent.get("id", "fallback_unknown")
@@ -388,8 +562,18 @@ class GenericIntakeAgent:
         self.result.request.intent_id = intent_id
 
         defaults = self.intent_config.get("defaults", {}) or {}
-        self.result.request.request_type = "service_request"
-        self.result.request.service_category = defaults.get("service_category", "generic_service")
+        self.result.request.request_type = "pre_quote"
+        self.result.request.service_category = (
+            intent.get("service_category") or defaults.get("service_category", "technical_services")
+        )
+
+        # Service type inference
+        if self.result.request.details.service_type in ("", "not_provided"):
+            inferred = self._infer_service_type_from_text(first_text)
+            if inferred != "not_provided":
+                self.memory["collected"]["service_type"] = inferred
+                self.result.request.details.service_type = inferred
+                self.result.request.summary = f"Pre-quote for: {inferred}"
 
         flow = intent.get("flow", []) or []
         required_fields: List[str] = []
@@ -406,6 +590,25 @@ class GenericIntakeAgent:
             if field == "issue_description":
                 continue
             if not field:
+                continue
+
+            d = self.result.request.details
+
+            already = False
+            if field == "service_type" and d.service_type != "not_provided":
+                already = True
+            elif field == "urgency" and d.urgency != "not_provided":
+                already = True
+            elif field == "timeline" and d.timeline != "not_provided":
+                already = True
+            elif field == "location" and d.location != "not_provided":
+                already = True
+            elif field == "budget_range" and d.budget_range != "not_provided":
+                already = True
+            elif field == "constraints" and len(d.constraints) > 0:
+                already = True
+
+            if already:
                 continue
 
             raw = self._ask(str(question))
@@ -437,7 +640,7 @@ class GenericIntakeAgent:
     def _compute_missing_fields(self, required_fields: Optional[List[str]] = None) -> List[str]:
         missing: List[str] = []
         d = self.result.request.details
-        required_fields = required_fields or ["service_type", "location"]
+        required_fields = required_fields or ["issue_description", "service_type", "location"]
 
         if "issue_description" in required_fields:
             issue = self.memory.get("collected", {}).get("issue_description", "")
@@ -445,7 +648,7 @@ class GenericIntakeAgent:
                 missing.append("issue_description")
 
         if "service_type" in required_fields:
-            service_type = self.memory.get("collected", {}).get("service_type")
+            service_type = self.memory.get("collected", {}).get("service_type") or d.service_type
             if not self._is_valid_service_type(service_type):
                 missing.append("service_type")
 
