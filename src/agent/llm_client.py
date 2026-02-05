@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass
 from typing import Optional
 
@@ -17,12 +16,10 @@ class LLMClient:
     """
     OpenAI-backed LLM client (Responses API).
 
-    Env:
-      - OPENAI_API_KEY required
     Config (intent_config["llm"]):
       - enabled: bool
-      - model: str (default: gpt-5)
-      - reasoning_effort: "low" | "medium" | "high" (default: low)
+      - model: str
+      - reasoning_effort: "low" | "medium" | "high"
     """
 
     def __init__(self, enabled: bool = False, model: str = "gpt-5", reasoning_effort: str = "low"):
@@ -32,7 +29,6 @@ class LLMClient:
 
         self._client: Optional[OpenAI] = None
         if self.enabled:
-            # OpenAI SDK reads OPENAI_API_KEY from env
             self._client = OpenAI()
 
     def _call_text(self, instructions: str, user_input: str) -> str:
@@ -45,13 +41,15 @@ class LLMClient:
             instructions=instructions,
             input=user_input,
         )
-        # SDK provides output_text convenience
         return (resp.output_text or "").strip()
 
+    # -----------------------------
+    # Location correction (primary)
+    # -----------------------------
     def suggest_correction_location(self, value: str) -> Optional[LLMResponse]:
         """
-        Returns a *single* corrected location string (e.g., 'Toronto, Canada') or None.
-        Must be conservative: return 'NO_SUGGESTION' if not confident.
+        Returns a single corrected location string or None.
+        Conservative: returns None if not confident.
         """
         if not self.enabled:
             return None
@@ -71,7 +69,6 @@ class LLMClient:
         )
 
         user_input = f'Raw location: "{value}"'
-
         text = self._call_text(instructions, user_input)
         if not text:
             return None
@@ -82,15 +79,75 @@ class LLMClient:
             return None
 
         suggestion = str(data.get("suggestion", "")).strip()
-        confidence = float(data.get("confidence", 0) or 0)
+        try:
+            confidence = float(data.get("confidence", 0) or 0)
+        except Exception:
+            confidence = 0.0
 
         if confidence < 0.75:
             return None
         if not suggestion or suggestion.upper() == "NO_SUGGESTION":
             return None
-
-        # If it's identical (case-insensitive), no point.
         if suggestion.lower() == value.lower():
+            return None
+
+        return LLMResponse(text=suggestion)
+
+    # -----------------------------------------
+    # ✅ Backward-compatible alias (fix your bug)
+    # -----------------------------------------
+    def suggest_location_correction(self, value: str) -> Optional[LLMResponse]:
+        """
+        Compatibility alias. Some parts of the codebase may call this older name.
+        """
+        return self.suggest_correction_location(value)
+
+    
+    def suggest_service_type_correction(self, value: str, allowed: list[str]) -> Optional[LLMResponse]:
+    
+        """
+        Suggest a corrected service_type from a closed set (allowed).
+        Returns None if not confident.
+        """
+        if not self.enabled:
+            return None
+
+        value = (value or "").strip()
+        if not value:
+            return None
+
+        instructions = (
+            "You are helping map a user's service type into a closed set.\n"
+            "Choose exactly ONE from the allowed list.\n"
+            "Return ONLY JSON with keys:\n"
+            "  - suggestion: string (must be one of allowed)\n"
+            "  - confidence: number 0..1\n"
+            "If you are not confident (confidence < 0.75), return:\n"
+            '{"suggestion":"NO_SUGGESTION","confidence":0}\n'
+            "Do NOT add any extra text."
+        )
+
+        user_input = f'Allowed: {allowed}\nUser entered: "{value}"'
+        text = self._call_text(instructions, user_input)
+        if not text:
+            return None
+
+        try:
+            data = json.loads(text)
+        except Exception:
+            return None
+
+        suggestion = str(data.get("suggestion", "")).strip()
+        try:
+            confidence = float(data.get("confidence", 0) or 0)
+        except Exception:
+            confidence = 0.0
+
+        if confidence < 0.75:
+            return None
+        if not suggestion or suggestion.upper() == "NO_SUGGESTION":
+            return None
+        if suggestion not in allowed:
             return None
 
         return LLMResponse(text=suggestion)

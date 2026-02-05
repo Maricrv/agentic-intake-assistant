@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from typing import Optional
 from .llm_client import LLMClient
 
@@ -8,37 +7,26 @@ class FieldCorrector:
     def __init__(self, llm: LLMClient):
         self.llm = llm
 
-    def _is_yes(self, s: str) -> bool:
-        t = (s or "").strip().lower()
-        return t in {"y", "yes", "ye", "yep", "yeah", "sure", "ok", "okay"}
-
-    def _is_no(self, s: str) -> bool:
-        t = (s or "").strip().lower()
-        return t in {"n", "no", "nope"}
-
-    def maybe_correct_location_with_confirmation(self, raw_location: str) -> Optional[str]:
-        raw = (raw_location or "").strip()
-        if not raw:
+    def maybe_correct_location_with_confirmation(self, raw_value: str) -> Optional[str]:
+        raw_value = (raw_value or "").strip()
+        if not raw_value:
             return None
 
-        # If LLM is disabled, do nothing.
-        if not getattr(self.llm, "enabled", False):
+        resp = self.llm.suggest_location_correction(raw_value)
+        if not resp:
             return None
 
-        suggestion = self.llm.suggest_location_correction(raw)
-        if not suggestion:
+        proposed = (resp.text or "").strip()
+        if not proposed:
             return None
 
-        if suggestion.strip().lower() == raw.strip().lower():
-            return None
+        def ask_yn() -> str:
+            return input(f'I think you meant "{proposed}". Use that? (y/n)\n> ').strip().lower()
 
-        print(f'I think you meant "{suggestion}". Use that? (y/n)')
-        ans = input("> ").strip()
+        ans = ask_yn()
+        if ans == "":
+            ans = ask_yn()
 
-        if self._is_yes(ans):
-            return suggestion
-        if self._is_no(ans):
-            return None
-
-        # If unclear answer, default to NOT changing
+        if ans in {"y", "yes"}:
+            return proposed
         return None

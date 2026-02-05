@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -8,6 +7,15 @@ from .schema import IntakeResult
 from .llm_client import LLMClient
 from .field_corrector import FieldCorrector
 from .field_extractor import extract_prefill
+
+from .normalizers import (
+    norm_text,
+    norm_lc,
+    normalize_value,
+    normalize_constraints,
+    is_valid_service_type,
+)
+from .consistency import keep_existing_on_conflict
 
 
 @dataclass
@@ -66,8 +74,12 @@ class GenericIntakeAgent:
         self.memory.setdefault("last_state", "S0")
         self.memory.setdefault("last_intent_id", None)
 
-        # ✅ initialize sources
-        self.result.request.sources = {"prefill": False, "llm_used": []}
+        # traceability (schema also sets defaults, but safe to ensure here)
+        if not isinstance(self.result.request.sources, dict) or not self.result.request.sources:
+            self.result.request.sources = {"prefill": False, "llm_used": []}
+        else:
+            self.result.request.sources.setdefault("prefill", False)
+            self.result.request.sources.setdefault("llm_used", [])
 
     def export_state(self) -> dict:
         self.memory["last_state"] = self.state.name
@@ -81,35 +93,11 @@ class GenericIntakeAgent:
         self.state = st
         self.result.session.state = st.name
 
-    def _norm_text(self, s: str) -> str:
-        return (s or "").strip()
-
-    def _norm_lc(self, s: str) -> str:
-        return self._norm_text(s).lower()
-
     def _log(self, msg: str) -> None:
         self.result.request.decision_log.append(msg)
 
-    def _add_inconsistency(self, msg: str) -> None:
-        self.result.readiness.inconsistencies.append(msg)
-
-    def _is_valid_service_type(self, text: str) -> bool:
-        t = (text or "").lower().strip()
-        if not t:
-            return False
-        question_markers = ["what", "how", "price", "pricing", "cost", "charge", "rates", "hours", "address", "?"]
-        if any(m in t for m in question_markers):
-            return False
-        if len(t) < 3:
-            return False
-        if t.isdigit():
-            return False
-        if t in {"yes", "no", "ok", "okay", "urgent", "flexible"}:
-            return False
-        return True
-
     def _pick_intent(self, first_text: str) -> Dict[str, Any]:
-        t = self._norm_lc(first_text)
+        t = norm_lc(first_text)
         intents: List[Dict[str, Any]] = self.intent_config.get("intents", []) or []
 
         candidates: List[tuple[int, Dict[str, Any]]] = []
@@ -154,7 +142,7 @@ class GenericIntakeAgent:
         return {"id": "fallback_unknown", "flow": []}
 
     def _infer_service_type_from_text(self, text: str) -> str:
-        tl = self._norm_lc(text)
+        tl = norm_lc(text)
         table = (self.intent_config or {}).get("normalizers", {}).get("service_type", {}) or {}
 
         candidates: List[tuple[int, str, str]] = []
@@ -172,134 +160,11 @@ class GenericIntakeAgent:
         self._log(f"service_type_inferred: {canonical} (matched_phrase='{phrase}')")
         return canonical
 
-    def _apply_prefill(self, intent: Dict[str, Any], field: str, value: str) -> None:
-        value = self._norm_text(value)
-        if not value:
-            return
-
-        # record source
-        self.result.request.sources["prefill"] = True
-
-        if field == "location":
-            normalizer = self._normalizer_for_field(intent, field)
-            norm = self._normalize_value(normalizer, value)
-            if norm != "not_provided":
-                self.result.request.details.location = norm
-                self._log(f"prefill: location='{norm}'")
-            return
-
-        if field == "timeline":
-            norm = self._normalize_value("timeline", value)
-            if norm != "not_provided":
-                self.result.request.details.timeline = norm
-                self._log(f"prefill: timeline='{norm}'")
-            return
-
-        if field == "budget_range":
-            norm = self._normalize_value("budget", value)
-            if norm != "not_provided":
-                self.result.request.details.budget_range = norm
-                self._log(f"prefill: budget_range='{norm}'")
-            return
-
-        if field == "urgency":
-            norm = self._normalize_value("urgency", value)
-            if norm != "not_provided":
-                self.result.request.details.urgency = norm
-                self._log(f"prefill: urgency='{norm}'")
-            return
-
-        # fallback
-        self._apply_field(intent, field, value)
-
-    def _extract_first_int(self, text: str) -> Optional[int]:
-        m = re.search(r"(\d+)", text or "")
-        if not m:
-            return None
-        try:
-            return int(m.group(1))
-        except Exception:
-            return None
-
-    def _normalize_value(self, kind: str, raw: str) -> str:
-        raw_clean = self._norm_text(raw)
-        raw_lc = self._norm_lc(raw)
-
-        if kind in ("text", "service_type"):
-            return raw_clean if raw_clean else "not_provided"
-
-        norms = (self.intent_config or {}).get("normalizers", {})
-        table = norms.get(kind, {}) or {}
-
-        for canonical, synonyms in table.items():
-            for s in synonyms or []:
-                if raw_lc == str(s).lower().strip():
-                    return canonical
-
-        if raw_clean in table:
-            return raw_clean
-
-        if kind == "budget":
-            n = self._extract_first_int(raw_lc)
-            if n is not None:
-                if n < 50:
-                    return "<50"
-                if 50 <= n <= 100:
-                    return "50-100"
-                if 100 < n <= 300:
-                    return "100-300"
-                if 300 < n <= 500:
-                    return "300-500"
-                return "500-1000"
-            return "not_provided"
-
-        if kind == "timeline":
-            t = raw_lc
-            if "today" in t or "tomorrow" in t or "within_24h" in t or "within 24" in t or "24h" in t:
-                return "within_24h"
-
-            m = re.search(r"(\d+)\s*(day|days|d)\b", t)
-            if m:
-                try:
-                    days = int(m.group(1))
-                    if days <= 1:
-                        return "within_24h"
-                    if days <= 7:
-                        return "within_1_week"
-                    if days <= 14:
-                        return "within_2_weeks"
-                except Exception:
-                    pass
-
-            if "week" in t:
-                if "2" in t or "two" in t:
-                    return "within_2_weeks"
-                return "within_1_week"
-
-            if "within_1_week" in t:
-                return "within_1_week"
-            if "within_2_weeks" in t:
-                return "within_2_weeks"
-
-            return "not_provided"
-
-        return "not_provided"
-
-    def _normalize_constraints(self, raw: str) -> str:
-        raw_clean = self._norm_text(raw)
-        if not raw_clean:
-            return ""
-
-        raw_lc = self._norm_lc(raw_clean)
-        if raw_lc.startswith("no"):
-            return ""
-
-        ignore = (self.intent_config or {}).get("normalizers", {}).get("constraints_ignore", []) or []
-        ignore_set = {str(x).lower().strip() for x in ignore}
-        if raw_lc in ignore_set:
-            return ""
-
-        return raw_clean
+    def _normalizer_for_field(self, intent: Dict[str, Any], field: str) -> str:
+        for step in (intent.get("flow", []) or []):
+            if step.get("field") == field:
+                return step.get("normalize", "text")
+        return "text"
 
     def _question_for_field(self, intent: Dict[str, Any], field: str) -> str:
         for step in (intent.get("flow", []) or []):
@@ -326,124 +191,185 @@ class GenericIntakeAgent:
             if step.get("required") and step.get("field")
         ]
 
-    def _normalizer_for_field(self, intent: Dict[str, Any], field: str) -> str:
-        for step in (intent.get("flow", []) or []):
-            if step.get("field") == field:
-                return step.get("normalize", "text")
-        return "text"
-
-    def _apply_field(self, intent: Dict[str, Any], field: str, raw: str) -> None:
-        # If user entered empty, do NOT overwrite an existing value
-        if not self._norm_text(raw):
+    def _apply_prefill(self, field: str, value: str) -> None:
+        value = norm_text(value)
+        if not value:
             return
 
         d = self.result.request.details
-        normalizer = self._normalizer_for_field(intent, field)
+        self.result.request.sources["prefill"] = True
 
-        # --- constraints ---
+        if field == "location":
+            norm = normalize_value("text", value, self.intent_config)
+            if norm != "not_provided":
+                d.location = norm
+                self._log(f"prefill: location='{norm}'")
+            return
+
+        if field == "timeline":
+            norm = normalize_value("timeline", value, self.intent_config)
+            if norm != "not_provided":
+                d.timeline = norm
+                self._log(f"prefill: timeline='{norm}'")
+            return
+
+        if field == "budget_range":
+            norm = normalize_value("budget", value, self.intent_config)
+            if norm != "not_provided":
+                d.budget_range = norm
+                self._log(f"prefill: budget_range='{norm}'")
+            return
+
+        if field == "urgency":
+            norm = normalize_value("urgency", value, self.intent_config)
+            if norm != "not_provided":
+                d.urgency = norm
+                self._log(f"prefill: urgency='{norm}'")
+            return
+
+    def _apply_field(self, intent: Dict[str, Any], field: str, raw: str) -> None:
+        if not norm_text(raw):
+            return
+
+        d = self.result.request.details
+        kind = self._normalizer_for_field(intent, field)
+
+        # ---------------- constraints ----------------
         if field == "constraints":
-            val = self._normalize_constraints(raw)
+            val = normalize_constraints(raw, self.intent_config)
             if val:
                 d.constraints.append(val)
                 self._log(f"user_set: constraints += '{val}'")
             return
 
-        # --- issue_description ---
+        # ---------------- issue_description ----------------
         if field == "issue_description":
-            val = self._normalize_value(normalizer, raw)
+            val = normalize_value("text", raw, self.intent_config)
             self.memory["collected"]["issue_description"] = val
             d.issue_description = val
             self._log("user_set: issue_description")
             return
 
-        # --- service_type ---
+        # ---------------- service_type (LLM-assisted) ----------------
         if field == "service_type":
-            val = self._normalize_value("service_type", raw)
-            if val == "not_provided" or not self._is_valid_service_type(val):
+            # Start with normalizer (cheap)
+            val = normalize_value("service_type", raw, self.intent_config)
+            allowed = ["repair", "installation", "maintenance", "consultation"]
+
+            # If not in allowed, ask LLM to map and confirm
+            if val != "not_provided" and val.lower() not in allowed:
+                resp = self.llm.suggest_service_type_correction(val, allowed)
+                if resp:
+                    proposed = (resp.text or "").strip()
+                    ans = input(f'I think you meant "{proposed}". Use that? (y/n)\n> ').strip().lower()
+                    if ans in {"y", "yes"}:
+                        val = proposed
+                        if "service_type_correction" not in self.result.request.sources.get("llm_used", []):
+                            self.result.request.sources["llm_used"].append("service_type_correction")
+                        self._log(f"llm_suggestion_accepted: service_type='{val}'")
+                    else:
+                        self._log(f"llm_suggestion_rejected: service_type='{proposed}'")
+
+            if val == "not_provided" or not is_valid_service_type(val):
                 return
 
-            # inconsistency check
-            if d.service_type != "not_provided" and self._norm_lc(d.service_type) != self._norm_lc(val):
-                self._add_inconsistency(f"service_type_conflict: kept '{d.service_type}', ignored '{val}'")
-                self._log(f"inconsistency: service_type '{d.service_type}' vs '{val}'")
-                return
-
-            self.memory["collected"]["service_type"] = val
-            d.service_type = val
-            self.result.request.summary = f"Pre-quote for: {val}"
-            self._log(f"user_set: service_type='{val}'")
+            # Conflict strategy: keep existing if conflict
+            res = keep_existing_on_conflict(
+                "service_type",
+                d.service_type,
+                val,
+                self.result.readiness.inconsistencies,
+                self._log,
+            )
+            if res.applied:
+                self.memory["collected"]["service_type"] = val
+                d.service_type = val
+                self.result.request.summary = f"Pre-quote for: {val}"
+                self._log(f"user_set: service_type='{val}'")
             return
 
-        # --- urgency ---
+        # ---------------- urgency ----------------
         if field == "urgency":
-            val = self._normalize_value("urgency", raw)
+            val = normalize_value("urgency", raw, self.intent_config)
             if val == "not_provided":
                 return
 
-            if d.urgency != "not_provided" and d.urgency != val:
-                self._add_inconsistency(f"urgency_conflict: kept '{d.urgency}', ignored '{val}'")
-                self._log(f"inconsistency: urgency '{d.urgency}' vs '{val}'")
-                return
-
-            d.urgency = val
-            self._log(f"user_set: urgency='{val}'")
+            res = keep_existing_on_conflict(
+                "urgency",
+                d.urgency,
+                val,
+                self.result.readiness.inconsistencies,
+                self._log,
+            )
+            if res.applied:
+                d.urgency = val
+                self._log(f"user_set: urgency='{val}'")
             return
 
-        # --- timeline ---
+        # ---------------- timeline ----------------
         if field == "timeline":
-            val = self._normalize_value("timeline", raw)
+            val = normalize_value("timeline", raw, self.intent_config)
             if val == "not_provided":
                 return
 
-            if d.timeline != "not_provided" and d.timeline != val:
-                self._add_inconsistency(f"timeline_conflict: kept '{d.timeline}', ignored '{val}'")
-                self._log(f"inconsistency: timeline '{d.timeline}' vs '{val}'")
-                return
-
-            d.timeline = val
-            self._log(f"user_set: timeline='{val}'")
+            res = keep_existing_on_conflict(
+                "timeline",
+                d.timeline,
+                val,
+                self.result.readiness.inconsistencies,
+                self._log,
+            )
+            if res.applied:
+                d.timeline = val
+                self._log(f"user_set: timeline='{val}'")
             return
 
-        # --- location ---
+        # ---------------- location (LLM-assisted) ----------------
         if field == "location":
-            # LLM correction (if enabled)
             corrected = self.corrector.maybe_correct_location_with_confirmation(raw)
             raw_to_use = corrected if corrected else raw
+
             if corrected:
                 if "location_correction" not in self.result.request.sources.get("llm_used", []):
                     self.result.request.sources["llm_used"].append("location_correction")
                 self._log(f"llm_suggestion_accepted: location='{corrected}'")
 
-            val = self._normalize_value(normalizer, raw_to_use)
+            val = normalize_value(kind, raw_to_use, self.intent_config)
             if val == "not_provided":
                 return
 
-            if d.location != "not_provided" and self._norm_lc(d.location) != self._norm_lc(val):
-                self._add_inconsistency(f"location_conflict: kept '{d.location}', ignored '{val}'")
-                self._log(f"inconsistency: location '{d.location}' vs '{val}'")
-                return
-
-            d.location = val
-            self._log(f"user_set: location='{val}'")
+            res = keep_existing_on_conflict(
+                "location",
+                d.location,
+                val,
+                self.result.readiness.inconsistencies,
+                self._log,
+            )
+            if res.applied:
+                d.location = val
+                self._log(f"user_set: location='{val}'")
             return
 
-        # --- budget_range ---
+        # ---------------- budget_range ----------------
         if field == "budget_range":
-            val = self._normalize_value("budget", raw)
+            val = normalize_value("budget", raw, self.intent_config)
             if val == "not_provided":
                 return
 
-            if d.budget_range != "not_provided" and d.budget_range != val:
-                self._add_inconsistency(f"budget_conflict: kept '{d.budget_range}', ignored '{val}'")
-                self._log(f"inconsistency: budget '{d.budget_range}' vs '{val}'")
-                return
-
-            d.budget_range = val
-            self._log(f"user_set: budget_range='{val}'")
+            res = keep_existing_on_conflict(
+                "budget",
+                d.budget_range,
+                val,
+                self.result.readiness.inconsistencies,
+                self._log,
+            )
+            if res.applied:
+                d.budget_range = val
+                self._log(f"user_set: budget_range='{val}'")
             return
 
         # fallback
-        self.memory["collected"][field] = self._normalize_value(normalizer, raw)
+        self.memory["collected"][field] = normalize_value(kind, raw, self.intent_config)
 
     def _ask_and_apply_followups(self, intent: Dict[str, Any], missing_fields: List[str]) -> None:
         for field in missing_fields:
@@ -494,6 +420,7 @@ class GenericIntakeAgent:
         if last_intent is None:
             last_intent = {"id": "fallback_unknown", "flow": []}
 
+        # Resume pending session
         if pending:
             print("Continuing your previous request...\n")
             self._set_state(S1)
@@ -532,6 +459,7 @@ class GenericIntakeAgent:
             self._set_state(S5)
             return self._done()
 
+        # New session
         self._set_state(S1)
 
         issue_q = "Tell me briefly what you need help with so we can prepare a pre-quotation."
@@ -548,14 +476,9 @@ class GenericIntakeAgent:
         if prefill:
             self._log("prefill: extracted_fields_from_first_message")
             for k, v in prefill.items():
-                norm_map = {
-                    "timeline": "timeline",
-                    "budget_range": "budget",
-                    "urgency": "urgency",
-                    "location": "text",
-                }
-                self._apply_prefill({"flow": [{"field": k, "normalize": norm_map.get(k, "text")}]}, k, v)
+                self._apply_prefill(k, v)
 
+        # Intent
         intent = self._pick_intent(first_text)
         intent_id = intent.get("id", "fallback_unknown")
         self.memory["last_intent_id"] = intent_id
@@ -567,7 +490,7 @@ class GenericIntakeAgent:
             intent.get("service_category") or defaults.get("service_category", "technical_services")
         )
 
-        # Service type inference
+        # Service type inference from first message (if missing)
         if self.result.request.details.service_type in ("", "not_provided"):
             inferred = self._infer_service_type_from_text(first_text)
             if inferred != "not_provided":
@@ -587,9 +510,7 @@ class GenericIntakeAgent:
             if required and field:
                 required_fields.append(field)
 
-            if field == "issue_description":
-                continue
-            if not field:
+            if field == "issue_description" or not field:
                 continue
 
             d = self.result.request.details
@@ -644,12 +565,12 @@ class GenericIntakeAgent:
 
         if "issue_description" in required_fields:
             issue = self.memory.get("collected", {}).get("issue_description", "")
-            if not self._norm_text(issue) or issue == "not_provided":
+            if not norm_text(issue) or issue == "not_provided":
                 missing.append("issue_description")
 
         if "service_type" in required_fields:
             service_type = self.memory.get("collected", {}).get("service_type") or d.service_type
-            if not self._is_valid_service_type(service_type):
+            if not is_valid_service_type(service_type):
                 missing.append("service_type")
 
         if "location" in required_fields:

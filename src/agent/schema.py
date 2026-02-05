@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
+
+# -------------------------
+# Channel & Session
+# -------------------------
 
 @dataclass
 class Channel:
@@ -24,6 +28,10 @@ class Session:
     state: str = "S0"
 
 
+# -------------------------
+# Request Details
+# -------------------------
+
 @dataclass
 class RequestDetails:
     issue_description: str = "not_provided"
@@ -31,10 +39,14 @@ class RequestDetails:
     urgency: str = "not_provided"            # urgent | flexible | not_provided
     timeline: str = "not_provided"           # within_24h | within_1_week | within_2_weeks | not_provided
     location: str = "not_provided"           # free text
-    budget_range: str = "not_provided"       # "<50" | "50-100" | "100-300" | "300-500" | "500-1000" | not_provided
+    budget_range: str = "not_provided"       # <50 | 50-100 | 100-300 | 300-500 | 500-1000 | not_provided
     constraints: List[str] = field(default_factory=list)
     attachments: List[str] = field(default_factory=list)
 
+
+# -------------------------
+# Request (core business object)
+# -------------------------
 
 @dataclass
 class Request:
@@ -44,14 +56,23 @@ class Request:
     summary: str = ""
     details: RequestDetails = field(default_factory=RequestDetails)
 
-    # ✅ Product-grade traceability
+    # Product-grade traceability
     decision_log: List[str] = field(default_factory=list)
-    sources: Dict[str, Any] = field(default_factory=dict)  # e.g., {"prefill": true, "llm_used": ["location_correction"]}
+    sources: Dict[str, Any] = field(
+        default_factory=lambda: {
+            "prefill": False,
+            "llm_used": []
+        }
+    )
 
+
+# -------------------------
+# Readiness & Handoff
+# -------------------------
 
 @dataclass
 class Readiness:
-    status: str = "not_ready"  # ready | not_ready | not_a_fit
+    status: str = "not_ready"                 # ready | not_ready | not_a_fit
     missing_fields: List[str] = field(default_factory=list)
     inconsistencies: List[str] = field(default_factory=list)
     notes: str = ""
@@ -59,10 +80,14 @@ class Readiness:
 
 @dataclass
 class Handoff:
-    recommended_action: str = "ask_follow_up"  # ask_follow_up | route_human | completed
+    recommended_action: str = "ask_follow_up" # ask_follow_up | route_human | completed
     next_questions: List[str] = field(default_factory=list)
     routing_hint: str = "human_review"
 
+
+# -------------------------
+# Audit
+# -------------------------
 
 @dataclass
 class Audit:
@@ -70,6 +95,10 @@ class Audit:
     tool_calls: List[Dict[str, Any]] = field(default_factory=list)
     created_at_utc: str = field(default_factory=utc_now_iso)
 
+
+# -------------------------
+# Final Output Object
+# -------------------------
 
 @dataclass
 class IntakeResult:
