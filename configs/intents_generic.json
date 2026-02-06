@@ -1,9 +1,11 @@
 {
-  "domain": "pre_quote_intake",
+  "domain": "generic_intake",
   "schema_version": "1.2",
   "defaults": {
     "language": "en",
-    "service_category": "technical_services",
+    "request_type": "service_request",
+    "service_category": "general_services",
+    "opening_message": "I can help you create a service request. I’ll ask a few quick questions to understand your needs.\n",
     "handoff": {
       "recommended_action": "route_human",
       "routing_hint": "human_review"
@@ -11,143 +13,352 @@
   },
   "intents": [
     {
-      "id": "pre_quote_request",
-      "label": "Pre-quotation request",
+      "id": "tax_intake_canada",
+      "label": "Accounting (Canada) request",
       "priority": 100,
-      "service_category": "technical_services",
+      "request_type": "service_request",
+      "service_category": "accounting",
+      "opening_message": "I can help you prepare an accounting request (Canada). I’ll ask a few quick questions to understand your situation.\n",
       "match": {
         "keywords_any": [
-          "repair",
-          "rapair",
-          "install",
-          "installation",
-          "fix",
-          "quote",
-          "book",
-          "support",
-          "help",
-          "service",
-          "broken",
-          "not working",
-          "issue",
-          "problem"
+          "tax",
+          "taxes",
+          "t4",
+          "t4a",
+          "t5",
+          "rrsp",
+          "tfsa",
+          "hst",
+          "gst",
+          "bookkeeping",
+          "payroll",
+          "cra",
+          "return",
+          "income",
+          "self employed",
+          "sole proprietor",
+          "incorporated",
+          "corporation"
         ]
+      },
+      "fields": {
+        "service_type": {
+          "type": "enum",
+          "allowed": ["personal_tax", "business_tax", "hst_gst", "bookkeeping", "consultation"]
+        },
+        "tax_year": { "type": "text" },
+        "residency_status": {
+          "type": "enum",
+          "allowed": ["resident", "non_resident", "newcomer", "unsure"]
+        },
+        "documents_ready": {
+          "type": "enum",
+          "allowed": ["yes", "no", "partial"]
+        },
+        "location": { "type": "text" },
+        "deadline_urgency": {
+          "type": "enum",
+          "allowed": ["urgent", "flexible"]
+        },
+        "notes": { "type": "text" }
       },
       "flow": [
         {
           "field": "issue_description",
-          "question": "Tell me briefly what you need help with so we can prepare a pre-quotation.",
-          "required": true,
+          "question": "Tell me briefly what you need help with (e.g., filing taxes, bookkeeping, HST/GST, CRA letter).",
           "normalize": "text"
         },
         {
           "field": "service_type",
-          "question": "What type of service is this? (repair / installation / maintenance / consultation)",
-          "required": true,
+          "question": "What type of accounting service is this? (personal_tax / business_tax / hst_gst / bookkeeping / consultation)",
           "normalize": "service_type"
+        },
+        {
+          "field": "tax_year",
+          "question": "Which tax year is this for? (e.g., 2025)",
+          "normalize": "text"
+        },
+        {
+          "field": "documents_ready",
+          "question": "Do you have your documents ready? (yes/no/partial)",
+          "normalize": "text"
+        },
+        {
+          "field": "residency_status",
+          "question": "What is your residency status for tax purposes? (resident / non_resident / newcomer / unsure)",
+          "normalize": "text"
+        },
+        {
+          "field": "location",
+          "question": "What is your location (city/province in Canada)?",
+          "normalize": "text"
+        },
+        {
+          "field": "deadline_urgency",
+          "question": "Is this urgent or flexible? (urgent/flexible)",
+          "normalize": "urgency"
+        },
+        {
+          "field": "constraints",
+          "question": "Any constraints or notes? (preferred contact hours, language, missing slips, etc.)",
+          "normalize": "text"
+        }
+      ]
+    },
+
+    {
+      "id": "it_support_intake",
+      "label": "IT support request",
+      "priority": 90,
+      "request_type": "service_request",
+      "service_category": "it_support",
+      "opening_message": "I can help you create an IT support request. I’ll ask a few quick questions to route it correctly.\n",
+      "match": {
+        "keywords_any": [
+          "laptop",
+          "computer",
+          "pc",
+          "printer",
+          "internet",
+          "wifi",
+          "vpn",
+          "email",
+          "outlook",
+          "teams",
+          "microsoft",
+          "login",
+          "password",
+          "account",
+          "not working",
+          "broken",
+          "error",
+          "screen",
+          "black"
+        ]
+      },
+      "fields": {
+        "service_type": {
+          "type": "enum",
+          "allowed": ["troubleshooting", "repair", "installation", "account_access", "network", "device_setup"]
+        },
+        "device_type": {
+          "type": "enum",
+          "allowed": ["laptop", "desktop", "phone", "printer", "network", "other"]
+        },
+        "os": {
+          "type": "enum",
+          "allowed": ["windows", "mac", "linux", "ios", "android", "unknown"]
+        },
+        "impact": {
+          "type": "enum",
+          "allowed": ["cannot_work", "degraded", "minor"]
+        },
+        "urgency": { "type": "enum", "allowed": ["urgent", "flexible"] },
+        "timeline": { "type": "enum", "allowed": ["within_24h", "within_1_week", "within_2_weeks"] },
+        "location": { "type": "text" },
+        "budget_range": {
+          "type": "enum",
+          "allowed": ["<50", "50-100", "100-300", "300-500", "500-1000", "not_sure"]
+        }
+      },
+      "flow": [
+        {
+          "field": "issue_description",
+          "question": "Briefly describe the issue and any error messages you see.",
+          "normalize": "text"
+        },
+        {
+          "field": "service_type",
+          "question": "What type of IT help is this? (troubleshooting / repair / installation / account_access / network / device_setup)",
+          "normalize": "service_type"
+        },
+        {
+          "field": "device_type",
+          "question": "What device is affected? (laptop / desktop / phone / printer / network / other)",
+          "normalize": "text"
+        },
+        {
+          "field": "os",
+          "question": "Which OS are you using? (windows / mac / linux / ios / android / unknown)",
+          "normalize": "text"
+        },
+        {
+          "field": "impact",
+          "question": "How much is this impacting you? (cannot_work / degraded / minor)",
+          "normalize": "text"
         },
         {
           "field": "urgency",
           "question": "Is this urgent or flexible? (urgent/flexible)",
-          "required": false,
           "normalize": "urgency"
         },
         {
           "field": "timeline",
           "question": "When do you want this addressed? (within_24h / within_1_week / within_2_weeks)",
-          "required": false,
           "normalize": "timeline"
         },
         {
           "field": "location",
-          "question": "What is your location (city/country)?",
-          "required": true,
+          "question": "What is your location (city/country or 'remote')?",
           "normalize": "text"
         },
         {
           "field": "budget_range",
           "question": "Do you have an estimated budget? (example: <50, 50-100, 100-300, 300-500, 500-1000, not sure)",
-          "required": false,
           "normalize": "budget"
         },
         {
           "field": "constraints",
-          "question": "Any constraints or notes? (building access hours, parking, safety rules, etc.)",
-          "required": false,
-          "normalize": "constraints"
+          "question": "Any constraints or notes? (availability, building access, VPN/MFA, etc.)",
+          "normalize": "text"
         }
-      ],
-      "handoff": {
-        "recommended_action": "route_human",
-        "routing_hint": "human_review"
-      }
+      ]
     },
+
     {
-      "id": "general_question",
-      "label": "Informational question",
+      "id": "insurance_claim_intake",
+      "label": "Insurance request",
       "priority": 80,
+      "request_type": "service_request",
+      "service_category": "insurance",
+      "opening_message": "I can help you create an insurance request. I’ll ask a few questions to route it to the right team.\n",
       "match": {
-        "starts_with_any": [
-          "what is",
-          "how do",
-          "how does",
-          "can you explain",
-          "do you offer",
-          "pricing",
-          "price list",
-          "hours",
-          "opening hours",
-          "where are you located",
-          "what is your address"
+        "keywords_any": [
+          "insurance",
+          "claim",
+          "policy",
+          "coverage",
+          "deductible",
+          "premium",
+          "accident",
+          "damage",
+          "theft",
+          "stolen",
+          "incident",
+          "billing",
+          "quote",
+          "auto",
+          "home",
+          "tenant",
+          "travel",
+          "life"
         ]
       },
-      "handoff": {
-        "recommended_action": "completed",
-        "routing_hint": "informational"
-      }
+      "fields": {
+        "service_type": {
+          "type": "enum",
+          "allowed": ["claim", "policy_change", "quote", "billing", "general_question"]
+        },
+        "insurance_type": {
+          "type": "enum",
+          "allowed": ["auto", "home", "tenant", "life", "travel", "business", "other"]
+        },
+        "incident_date": { "type": "text" },
+        "incident_summary": { "type": "text" },
+        "policy_number": { "type": "text" },
+        "urgency": { "type": "enum", "allowed": ["urgent", "flexible"] },
+        "location": { "type": "text" },
+        "contact_preference": {
+          "type": "enum",
+          "allowed": ["phone", "email"]
+        }
+      },
+      "flow": [
+        {
+          "field": "issue_description",
+          "question": "Tell me briefly what you need help with (claim, policy change, quote, billing, etc.).",
+          "normalize": "text"
+        },
+        {
+          "field": "service_type",
+          "question": "What type of insurance request is this? (claim / policy_change / quote / billing / general_question)",
+          "normalize": "service_type"
+        },
+        {
+          "field": "insurance_type",
+          "question": "Which type of insurance? (auto / home / tenant / life / travel / business / other)",
+          "normalize": "text"
+        },
+        {
+          "field": "incident_date",
+          "question": "If this is related to an incident/claim, when did it happen? (date or 'not applicable')",
+          "normalize": "text"
+        },
+        {
+          "field": "incident_summary",
+          "question": "Briefly describe what happened (or your question if no incident).",
+          "normalize": "text"
+        },
+        {
+          "field": "policy_number",
+          "question": "Do you have a policy number? (optional)",
+          "normalize": "text"
+        },
+        {
+          "field": "location",
+          "question": "What is your location (city/province/country)?",
+          "normalize": "text"
+        },
+        {
+          "field": "urgency",
+          "question": "Is this urgent or flexible? (urgent/flexible)",
+          "normalize": "urgency"
+        },
+        {
+          "field": "constraints",
+          "question": "Any additional notes or constraints?",
+          "normalize": "text"
+        }
+      ]
     },
+
     {
       "id": "fallback_unknown",
-      "label": "Unknown / needs clarification",
-      "priority": 10,
-      "match": {
-        "always": true
-      },
-      "handoff": {
-        "recommended_action": "ask_follow_up",
-        "routing_hint": "human_review"
-      }
+      "label": "Fallback / unknown",
+      "priority": 1,
+      "request_type": "service_request",
+      "service_category": "general_services",
+      "opening_message": "I can help you create a service request. I’ll ask a few quick questions.\n",
+      "match": { "keywords_any": [] },
+      "flow": [
+        {
+          "field": "issue_description",
+          "question": "Tell me briefly what you need help with.",
+          "normalize": "text"
+        },
+        {
+          "field": "location",
+          "question": "What is your location (city/country)?",
+          "normalize": "text"
+        },
+        {
+          "field": "constraints",
+          "question": "Any constraints or notes? (optional)",
+          "normalize": "text"
+        }
+      ]
     }
   ],
+
   "normalizers": {
-    "service_type": {
-      "repair": ["repair", "fix", "broken", "not working"],
-      "installation": ["install", "installation", "setup", "set up"],
-      "maintenance": ["maintenance", "service visit", "preventive"],
-      "consultation": ["consultation", "advice", "assessment", "estimate"]
-    },
+    "service_type": {},
     "urgency": {
-      "urgent": ["urgent", "asap", "emergency", "right now", "immediately", "today"],
-      "flexible": ["flexible", "whenever", "no rush", "not urgent", "later"]
+      "urgent": ["urgent", "asap", "immediately", "right away", "high", "critical"],
+      "flexible": ["flexible", "not urgent", "whenever", "low", "normal"]
     },
     "timeline": {
-      "within_24h": ["within_24h", "24h", "24 hours", "within 24 hours", "today", "1 day", "tomorrow"],
-      "within_1_week": ["within_1_week", "1 week", "within 1 week", "this week", "7 days", "soon"],
-      "within_2_weeks": ["within_2_weeks", "2 weeks", "within 2 weeks", "14 days"]
+      "within_24h": ["within 24 hours", "24 hours", "today", "tomorrow", "24h"],
+      "within_1_week": ["within 1 week", "1 week", "one week", "7 days", "this week"],
+      "within_2_weeks": ["within 2 weeks", "2 weeks", "two weeks", "14 days"]
     },
-    "budget": {
-      "<50": ["<50", "under 50", "less than 50"],
-      "50-100": ["50-100", "between 50 and 100"],
-      "100-300": ["100-300", "between 100 and 300"],
-      "300-500": ["300-500", "between 300 and 500"],
-      "500-1000": ["500-1000", "between 500 and 1000"],
-      "not_provided": ["not sure", "unknown", "n/a", "na"]
-    },
-    "constraints_ignore": ["yes", "no", "ok", "okay", "none", "na", "n/a"]
+    "budget": {},
+    "constraints_ignore": ["n/a", "none", "no", "nope"]
   },
+
   "llm": {
     "enabled": true,
     "model": "gpt-5",
     "reasoning_effort": "low"
   }
 }
+

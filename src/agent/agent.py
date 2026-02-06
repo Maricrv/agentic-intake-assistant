@@ -46,6 +46,7 @@ class GenericIntakeAgent:
         self.result.session.session_id = session_id
 
         self.intent_config: Dict[str, Any] = intent_config or {}
+        self.defaults: Dict[str, Any] = (self.intent_config.get("defaults") or {})
 
         llm_cfg = (self.intent_config.get("llm") or {})
         llm_enabled = bool(llm_cfg.get("enabled", False))
@@ -74,7 +75,7 @@ class GenericIntakeAgent:
         self.memory.setdefault("last_state", "S0")
         self.memory.setdefault("last_intent_id", None)
 
-        # traceability (schema also sets defaults, but safe to ensure here)
+        # Ensure sources always present
         if not isinstance(self.result.request.sources, dict) or not self.result.request.sources:
             self.result.request.sources = {"prefill": False, "llm_used": []}
         else:
@@ -96,11 +97,14 @@ class GenericIntakeAgent:
     def _log(self, msg: str) -> None:
         self.result.request.decision_log.append(msg)
 
+    # ----------------------------
+    # Intent selection
+    # ----------------------------
     def _pick_intent(self, first_text: str) -> Dict[str, Any]:
         t = norm_lc(first_text)
         intents: List[Dict[str, Any]] = self.intent_config.get("intents", []) or []
 
-        candidates: List[tuple[int, Dict[str, Any]]] = []
+        candidates: List[tuple[int, int, Dict[str, Any]]] = []
         always_intents: List[tuple[int, Dict[str, Any]]] = []
 
         for it in intents:
@@ -111,25 +115,29 @@ class GenericIntakeAgent:
                 always_intents.append((priority, it))
                 continue
 
+            score = 0
             kws = [str(x).lower() for x in match.get("keywords_any", [])]
-            if kws and any(k in t for k in kws):
-                candidates.append((priority, it))
-                continue
+            for kw in kws:
+                if kw and kw in t:
+                    score += 1
 
             starts = [str(x).lower() for x in match.get("starts_with_any", [])]
-            if starts and any(t.startswith(s) for s in starts):
-                candidates.append((priority, it))
-                continue
+            for s in starts:
+                if s and t.startswith(s):
+                    score += 2
+
+            if score > 0:
+                candidates.append((score, priority, it))
 
         if candidates:
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            chosen = candidates[0][1]
+            candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+            chosen = candidates[0][2]
             self._log(f"intent_selected: {chosen.get('id')} (rule_match)")
             return chosen
 
         for it in intents:
-            if it.get("id") == "pre_quote_request":
-                self._log("intent_selected: pre_quote_request (default)")
+            if it.get("id") == "fallback_unknown":
+                self._log("intent_selected: fallback_unknown (no_match)")
                 return it
 
         if always_intents:
@@ -138,40 +146,28 @@ class GenericIntakeAgent:
             self._log(f"intent_selected: {chosen.get('id')} (always)")
             return chosen
 
-        self._log("intent_selected: fallback_unknown (no_match)")
+        self._log("intent_selected: fallback_unknown (no_intents)")
         return {"id": "fallback_unknown", "flow": []}
 
-    def _infer_service_type_from_text(self, text: str) -> str:
-        tl = norm_lc(text)
-        table = (self.intent_config or {}).get("normalizers", {}).get("service_type", {}) or {}
-
-        candidates: List[tuple[int, str, str]] = []
-        for canonical, synonyms in table.items():
-            for s in (synonyms or []):
-                phrase = str(s).lower().strip()
-                if phrase and phrase in tl:
-                    candidates.append((len(phrase), canonical, phrase))
-
-        if not candidates:
-            return "not_provided"
-
-        candidates.sort(key=lambda x: x[0], reverse=True)
-        _, canonical, phrase = candidates[0]
-        self._log(f"service_type_inferred: {canonical} (matched_phrase='{phrase}')")
-        return canonical
-
-    def _normalizer_for_field(self, intent: Dict[str, Any], field: str) -> str:
-        for step in (intent.get("flow", []) or []):
-            if step.get("field") == field:
-                return step.get("normalize", "text")
-        return "text"
+    # ----------------------------
+    # Config helpers
+    # ----------------------------
+    def _opening_message(self, intent: Dict[str, Any]) -> str:
+        msg = intent.get("opening_message") or self.defaults.get("opening_message")
+        if not msg:
+            msg = "I can help you create a service request. I’ll ask a few quick questions.\n"
+        return str(msg)
 
     def _question_for_field(self, intent: Dict[str, Any], field: str) -> str:
         for step in (intent.get("flow", []) or []):
             if step.get("field") == field and step.get("question"):
                 return str(step["question"])
+
+        # Neutral fallbacks
+        if field == "issue_description":
+            return "Tell me briefly what you need help with."
         if field == "service_type":
-            return "What type of service is this? (repair / installation / maintenance / consultation)"
+            return "What type of service is this?"
         if field == "location":
             return "What is your location (city/country)?"
         if field == "budget_range":
@@ -180,16 +176,40 @@ class GenericIntakeAgent:
             return "When do you want this addressed? (within_24h / within_1_week / within_2_weeks)"
         if field == "urgency":
             return "Is this urgent or flexible? (urgent/flexible)"
-        if field == "issue_description":
-            return "Tell me briefly what you need help with so we can prepare a pre-quotation."
         return f"Please provide: {field}"
 
+    def _normalizer_for_field(self, intent: Dict[str, Any], field: str) -> str:
+        for step in (intent.get("flow", []) or []):
+            if step.get("field") == field:
+                return step.get("normalize", "text")
+        return "text"
+
     def _required_fields_from_intent(self, intent: Dict[str, Any]) -> List[str]:
+        rf = intent.get("required_fields")
+        if isinstance(rf, list) and rf:
+            return [str(x) for x in rf]
+
         return [
             str(step["field"])
             for step in (intent.get("flow", []) or [])
             if step.get("required") and step.get("field")
         ]
+
+    def _allowed_for_field(self, intent: Dict[str, Any], field: str) -> List[str]:
+        fields = intent.get("fields", {}) or {}
+        spec = fields.get(field, {}) or {}
+        allowed = spec.get("allowed") or []
+        return [str(x) for x in allowed]
+
+    # ----------------------------
+    # Prefill handling
+    # ----------------------------
+    def _extract_prefill_safe(self, text: str) -> Dict[str, Any]:
+        try:
+            data = extract_prefill(text, self.intent_config)  # type: ignore
+        except TypeError:
+            data = extract_prefill(text)  # type: ignore
+        return data or {}
 
     def _apply_prefill(self, field: str, value: str) -> None:
         value = norm_text(value)
@@ -227,6 +247,20 @@ class GenericIntakeAgent:
                 self._log(f"prefill: urgency='{norm}'")
             return
 
+        if field == "service_type":
+            norm = normalize_value("service_type", value, self.intent_config)
+            if norm != "not_provided":
+                d.service_type = norm
+                self._log(f"prefill: service_type='{norm}'")
+            return
+
+        # Anything else -> extra_fields
+        d.extra_fields[field] = normalize_value("text", value, self.intent_config)
+        self._log(f"prefill: extra_fields['{field}']")
+
+    # ----------------------------
+    # Apply field values
+    # ----------------------------
     def _apply_field(self, intent: Dict[str, Any], field: str, raw: str) -> None:
         if not norm_text(raw):
             return
@@ -234,7 +268,7 @@ class GenericIntakeAgent:
         d = self.result.request.details
         kind = self._normalizer_for_field(intent, field)
 
-        # ---------------- constraints ----------------
+        # constraints -> list
         if field == "constraints":
             val = normalize_constraints(raw, self.intent_config)
             if val:
@@ -242,7 +276,7 @@ class GenericIntakeAgent:
                 self._log(f"user_set: constraints += '{val}'")
             return
 
-        # ---------------- issue_description ----------------
+        # issue_description
         if field == "issue_description":
             val = normalize_value("text", raw, self.intent_config)
             self.memory["collected"]["issue_description"] = val
@@ -250,91 +284,17 @@ class GenericIntakeAgent:
             self._log("user_set: issue_description")
             return
 
-        # ---------------- service_type (LLM-assisted) ----------------
-        if field == "service_type":
-            # Start with normalizer (cheap)
-            val = normalize_value("service_type", raw, self.intent_config)
-            allowed = ["repair", "installation", "maintenance", "consultation"]
-
-            # If not in allowed, ask LLM to map and confirm
-            if val != "not_provided" and val.lower() not in allowed:
-                resp = self.llm.suggest_service_type_correction(val, allowed)
-                if resp:
-                    proposed = (resp.text or "").strip()
-                    ans = input(f'I think you meant "{proposed}". Use that? (y/n)\n> ').strip().lower()
-                    if ans in {"y", "yes"}:
-                        val = proposed
-                        if "service_type_correction" not in self.result.request.sources.get("llm_used", []):
-                            self.result.request.sources["llm_used"].append("service_type_correction")
-                        self._log(f"llm_suggestion_accepted: service_type='{val}'")
-                    else:
-                        self._log(f"llm_suggestion_rejected: service_type='{proposed}'")
-
-            if val == "not_provided" or not is_valid_service_type(val):
-                return
-
-            # Conflict strategy: keep existing if conflict
-            res = keep_existing_on_conflict(
-                "service_type",
-                d.service_type,
-                val,
-                self.result.readiness.inconsistencies,
-                self._log,
-            )
-            if res.applied:
-                self.memory["collected"]["service_type"] = val
-                d.service_type = val
-                self.result.request.summary = f"Pre-quote for: {val}"
-                self._log(f"user_set: service_type='{val}'")
-            return
-
-        # ---------------- urgency ----------------
-        if field == "urgency":
-            val = normalize_value("urgency", raw, self.intent_config)
-            if val == "not_provided":
-                return
-
-            res = keep_existing_on_conflict(
-                "urgency",
-                d.urgency,
-                val,
-                self.result.readiness.inconsistencies,
-                self._log,
-            )
-            if res.applied:
-                d.urgency = val
-                self._log(f"user_set: urgency='{val}'")
-            return
-
-        # ---------------- timeline ----------------
-        if field == "timeline":
-            val = normalize_value("timeline", raw, self.intent_config)
-            if val == "not_provided":
-                return
-
-            res = keep_existing_on_conflict(
-                "timeline",
-                d.timeline,
-                val,
-                self.result.readiness.inconsistencies,
-                self._log,
-            )
-            if res.applied:
-                d.timeline = val
-                self._log(f"user_set: timeline='{val}'")
-            return
-
-        # ---------------- location (LLM-assisted) ----------------
+        # location with confirmation
         if field == "location":
             corrected = self.corrector.maybe_correct_location_with_confirmation(raw)
             raw_to_use = corrected if corrected else raw
 
-            if corrected:
+            if corrected and corrected != raw:
                 if "location_correction" not in self.result.request.sources.get("llm_used", []):
                     self.result.request.sources["llm_used"].append("location_correction")
                 self._log(f"llm_suggestion_accepted: location='{corrected}'")
 
-            val = normalize_value(kind, raw_to_use, self.intent_config)
+            val = normalize_value("text", raw_to_use, self.intent_config)
             if val == "not_provided":
                 return
 
@@ -350,27 +310,99 @@ class GenericIntakeAgent:
                 self._log(f"user_set: location='{val}'")
             return
 
-        # ---------------- budget_range ----------------
-        if field == "budget_range":
-            val = normalize_value("budget", raw, self.intent_config)
+        # service_type (allowed per intent + optional LLM)
+        if field == "service_type":
+            val = normalize_value("service_type", raw, self.intent_config)
+            allowed = self._allowed_for_field(intent, "service_type")
+
+            if allowed:
+                allowed_lc = {a.lower(): a for a in allowed}
+                if val != "not_provided" and val.lower() not in allowed_lc:
+                    resp = self.llm.suggest_service_type_correction(val, allowed)
+                    if resp:
+                        proposed = (resp.text or "").strip()
+                        ans = input(f'I think you meant "{proposed}". Use that? (y/n)\n> ').strip().lower()
+                        if ans in {"y", "yes"}:
+                            val = proposed
+                            if "service_type_correction" not in self.result.request.sources.get("llm_used", []):
+                                self.result.request.sources["llm_used"].append("service_type_correction")
+                            self._log(f"llm_suggestion_accepted: service_type='{val}'")
+                        else:
+                            self._log(f"llm_suggestion_rejected: service_type='{proposed}'")
+
+                if val.lower() in allowed_lc:
+                    val = allowed_lc[val.lower()]
+
             if val == "not_provided":
                 return
 
+            # Keep old validator only if you still want strict IT types.
+            # For multi-domain, if allowed exists it is enough.
+            if not allowed and not is_valid_service_type(val):
+                # If your old validator is too strict, accept raw
+                val = norm_text(raw)
+
             res = keep_existing_on_conflict(
-                "budget",
-                d.budget_range,
+                "service_type",
+                d.service_type,
                 val,
                 self.result.readiness.inconsistencies,
                 self._log,
             )
             if res.applied:
-                d.budget_range = val
-                self._log(f"user_set: budget_range='{val}'")
+                self.memory["collected"]["service_type"] = val
+                d.service_type = val
+                label = str(intent.get("label") or "Service request")
+                self.result.request.summary = f"{label}: {val}"
+                self._log(f"user_set: service_type='{val}'")
             return
 
-        # fallback
-        self.memory["collected"][field] = normalize_value(kind, raw, self.intent_config)
+        # If kind says urgency/timeline/budget, normalize properly and store:
+        if kind == "urgency":
+            val = normalize_value("urgency", raw, self.intent_config)
+            if val == "not_provided":
+                return
+            if field == "urgency":
+                d.urgency = val
+                self._log(f"user_set: urgency='{val}'")
+            else:
+                d.extra_fields[field] = val
+                self._log(f"user_set: extra_fields['{field}']='{val}'")
+            return
 
+        if kind == "timeline":
+            val = normalize_value("timeline", raw, self.intent_config)
+            if val == "not_provided":
+                return
+            if field == "timeline":
+                d.timeline = val
+                self._log(f"user_set: timeline='{val}'")
+            else:
+                d.extra_fields[field] = val
+                self._log(f"user_set: extra_fields['{field}']='{val}'")
+            return
+
+        if kind == "budget":
+            val = normalize_value("budget", raw, self.intent_config)
+            if val == "not_provided":
+                return
+            if field == "budget_range":
+                d.budget_range = val
+                self._log(f"user_set: budget_range='{val}'")
+            else:
+                d.extra_fields[field] = val
+                self._log(f"user_set: extra_fields['{field}']='{val}'")
+            return
+
+        # Default: store as text into extra_fields (domain-specific)
+        val = normalize_value(kind, raw, self.intent_config)
+        self.memory["collected"][field] = val
+        d.extra_fields[field] = val
+        self._log(f"user_set: extra_fields['{field}']='{val}'")
+
+    # ----------------------------
+    # Followups and handoff
+    # ----------------------------
     def _ask_and_apply_followups(self, intent: Dict[str, Any], missing_fields: List[str]) -> None:
         for field in missing_fields:
             self.memory.setdefault("attempts", {})
@@ -385,8 +417,7 @@ class GenericIntakeAgent:
             self._apply_field(intent, field, raw)
 
     def _handoff_for_ready(self, intent: Dict[str, Any]) -> Dict[str, Any]:
-        defaults = self.intent_config.get("defaults", {}) or {}
-        default_handoff = defaults.get("handoff", {}) or {
+        default_handoff = self.defaults.get("handoff", {}) or {
             "recommended_action": "route_human",
             "routing_hint": "human_review",
         }
@@ -396,14 +427,17 @@ class GenericIntakeAgent:
             return intent_handoff
         return default_handoff
 
+    # ----------------------------
+    # Main run
+    # ----------------------------
     def run(self) -> IntakeResult:
         self._set_state(S0)
-        print("I can help you prepare a pre-quotation request. I’ll ask a few quick questions to understand your needs.\n")
 
         intents = self.intent_config.get("intents", []) or []
         pending = self.memory.get("missing_fields", []) or []
         last_intent_id = self.memory.get("last_intent_id")
 
+        # Resume intent
         last_intent = None
         if last_intent_id and intents:
             for it in intents:
@@ -462,21 +496,18 @@ class GenericIntakeAgent:
         # New session
         self._set_state(S1)
 
-        issue_q = "Tell me briefly what you need help with so we can prepare a pre-quotation."
-        for it in intents:
-            if it.get("id") == "pre_quote_request":
-                issue_q = self._question_for_field(it, "issue_description")
-                break
+        # Print default opening message (neutral)
+        print(self._opening_message({"opening_message": self.defaults.get("opening_message")}))
 
-        first_text = self._ask(issue_q)
+        first_text = self._ask(self._question_for_field({"flow": []}, "issue_description"))
         self._apply_field({"flow": [{"field": "issue_description", "normalize": "text"}]}, "issue_description", first_text)
 
         # Prefill
-        prefill = extract_prefill(first_text)
+        prefill = self._extract_prefill_safe(first_text)
         if prefill:
             self._log("prefill: extracted_fields_from_first_message")
             for k, v in prefill.items():
-                self._apply_prefill(k, v)
+                self._apply_prefill(str(k), str(v))
 
         # Intent
         intent = self._pick_intent(first_text)
@@ -484,57 +515,48 @@ class GenericIntakeAgent:
         self.memory["last_intent_id"] = intent_id
         self.result.request.intent_id = intent_id
 
-        defaults = self.intent_config.get("defaults", {}) or {}
-        self.result.request.request_type = "pre_quote"
-        self.result.request.service_category = (
-            intent.get("service_category") or defaults.get("service_category", "technical_services")
-        )
+        # Apply request metadata from config (✅ generic)
+        self.result.request.request_type = str(intent.get("request_type") or self.defaults.get("request_type") or self.result.request.request_type)
+        self.result.request.service_category = str(intent.get("service_category") or self.defaults.get("service_category") or self.result.request.service_category)
 
-        # Service type inference from first message (if missing)
-        if self.result.request.details.service_type in ("", "not_provided"):
-            inferred = self._infer_service_type_from_text(first_text)
-            if inferred != "not_provided":
-                self.memory["collected"]["service_type"] = inferred
-                self.result.request.details.service_type = inferred
-                self.result.request.summary = f"Pre-quote for: {inferred}"
+        # Print intent opening message (optional)
+        print(self._opening_message(intent))
 
+        # Summary base label
+        self.result.request.summary = str(intent.get("label") or "Service request")
+
+        # Run flow
         flow = intent.get("flow", []) or []
-        required_fields: List[str] = []
+        required_fields = self._required_fields_from_intent(intent)
+
         self._set_state(S2)
 
         for step in flow:
             field = step.get("field")
             question = step.get("question", "")
-            required = bool(step.get("required", False))
-
-            if required and field:
-                required_fields.append(field)
-
             if field == "issue_description" or not field:
                 continue
 
+            # Skip if already filled (details or extra_fields)
             d = self.result.request.details
-
             already = False
-            if field == "service_type" and d.service_type != "not_provided":
-                already = True
-            elif field == "urgency" and d.urgency != "not_provided":
-                already = True
-            elif field == "timeline" and d.timeline != "not_provided":
-                already = True
-            elif field == "location" and d.location != "not_provided":
-                already = True
-            elif field == "budget_range" and d.budget_range != "not_provided":
-                already = True
-            elif field == "constraints" and len(d.constraints) > 0:
-                already = True
+            if hasattr(d, field):
+                cur = getattr(d, field)
+                if isinstance(cur, str) and cur and cur != "not_provided":
+                    already = True
+                elif isinstance(cur, list) and len(cur) > 0:
+                    already = True
+            else:
+                if field in d.extra_fields and norm_text(str(d.extra_fields.get(field))):
+                    already = True
 
             if already:
                 continue
 
-            raw = self._ask(str(question))
+            raw = self._ask(str(question) if question else self._question_for_field(intent, field))
             self._apply_field(intent, field, raw)
 
+        # Final readiness
         self._set_state(S4)
         missing = self._compute_missing_fields(required_fields=required_fields)
 
@@ -558,24 +580,44 @@ class GenericIntakeAgent:
         self._set_state(S5)
         return self._done()
 
+    # ----------------------------
+    # Missing fields / finalize / done
+    # ----------------------------
     def _compute_missing_fields(self, required_fields: Optional[List[str]] = None) -> List[str]:
         missing: List[str] = []
         d = self.result.request.details
+
         required_fields = required_fields or ["issue_description", "service_type", "location"]
 
-        if "issue_description" in required_fields:
-            issue = self.memory.get("collected", {}).get("issue_description", "")
-            if not norm_text(issue) or issue == "not_provided":
-                missing.append("issue_description")
+        for f in required_fields:
+            if f == "issue_description":
+                issue = d.issue_description
+                if not norm_text(issue) or issue == "not_provided":
+                    missing.append(f)
+                continue
 
-        if "service_type" in required_fields:
-            service_type = self.memory.get("collected", {}).get("service_type") or d.service_type
-            if not is_valid_service_type(service_type):
-                missing.append("service_type")
+            if f == "service_type":
+                st = d.service_type
+                if not norm_text(st) or st == "not_provided":
+                    missing.append(f)
+                continue
 
-        if "location" in required_fields:
-            if not d.location or d.location == "not_provided":
-                missing.append("location")
+            if f == "location":
+                loc = d.location
+                if not norm_text(loc) or loc == "not_provided":
+                    missing.append(f)
+                continue
+
+            # Any other required field: check extra_fields
+            v = d.extra_fields.get(f)
+            if isinstance(v, str):
+                if not norm_text(v) or v == "not_provided":
+                    missing.append(f)
+            elif isinstance(v, list):
+                if len(v) == 0:
+                    missing.append(f)
+            elif v is None:
+                missing.append(f)
 
         return missing
 

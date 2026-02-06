@@ -5,74 +5,59 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 
-def utc_now_iso() -> str:
+def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
-
-# -------------------------
-# Channel & Session
-# -------------------------
 
 @dataclass
 class Channel:
     source: str = "cli"
     user_id: str = "local_user"
     username: str = "local"
-    timestamp_utc: str = field(default_factory=utc_now_iso)
+    timestamp_utc: str = field(default_factory=_utc_now_iso)
 
 
 @dataclass
 class Session:
-    session_id: str = "sess_local"
+    session_id: str = "sess_local_001"
     language: str = "en"
     state: str = "S0"
 
 
-# -------------------------
-# Request Details
-# -------------------------
-
 @dataclass
 class RequestDetails:
+    # Core generic fields (work for ANY domain)
     issue_description: str = "not_provided"
-    service_type: str = "not_provided"       # repair | installation | maintenance | consultation
-    urgency: str = "not_provided"            # urgent | flexible | not_provided
-    timeline: str = "not_provided"           # within_24h | within_1_week | within_2_weeks | not_provided
-    location: str = "not_provided"           # free text
-    budget_range: str = "not_provided"       # <50 | 50-100 | 100-300 | 300-500 | 500-1000 | not_provided
+    service_type: str = "not_provided"
+    urgency: str = "not_provided"
+    timeline: str = "not_provided"
+    location: str = "not_provided"
+    budget_range: str = "not_provided"
+
     constraints: List[str] = field(default_factory=list)
-    attachments: List[str] = field(default_factory=list)
+    attachments: List[dict] = field(default_factory=list)
 
+    # ✅ Any domain-specific fields go here (tax_year, insurance_type, etc.)
+    extra_fields: Dict[str, Any] = field(default_factory=dict)
 
-# -------------------------
-# Request (core business object)
-# -------------------------
 
 @dataclass
 class Request:
-    request_type: str = "pre_quote"
-    service_category: str = "technical_services"
+    request_type: str = "service_request"
+    service_category: str = "general_services"
     intent_id: str = "fallback_unknown"
-    summary: str = ""
+    summary: str = "Service request"
     details: RequestDetails = field(default_factory=RequestDetails)
 
-    # Product-grade traceability
     decision_log: List[str] = field(default_factory=list)
-    sources: Dict[str, Any] = field(
-        default_factory=lambda: {
-            "prefill": False,
-            "llm_used": []
-        }
-    )
 
+    # Keep dict for backward compatibility with your current code
+    sources: Dict[str, Any] = field(default_factory=lambda: {"prefill": False, "llm_used": []})
 
-# -------------------------
-# Readiness & Handoff
-# -------------------------
 
 @dataclass
 class Readiness:
-    status: str = "not_ready"                 # ready | not_ready | not_a_fit
+    status: str = "not_ready"  # ready / needs_followup / not_ready
     missing_fields: List[str] = field(default_factory=list)
     inconsistencies: List[str] = field(default_factory=list)
     notes: str = ""
@@ -80,36 +65,31 @@ class Readiness:
 
 @dataclass
 class Handoff:
-    recommended_action: str = "ask_follow_up" # ask_follow_up | route_human | completed
+    recommended_action: str = "ask_follow_up"  # route_human / ask_follow_up / completed
     next_questions: List[str] = field(default_factory=list)
     routing_hint: str = "human_review"
 
 
-# -------------------------
-# Audit
-# -------------------------
-
 @dataclass
 class Audit:
     conversation_turns: int = 0
-    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
-    created_at_utc: str = field(default_factory=utc_now_iso)
+    tool_calls: List[str] = field(default_factory=list)
+    created_at_utc: str = field(default_factory=_utc_now_iso)
 
-
-# -------------------------
-# Final Output Object
-# -------------------------
 
 @dataclass
 class IntakeResult:
     schema_version: str = "1.2"
     request_id: str = "req_local_000001"
+
     channel: Channel = field(default_factory=Channel)
     session: Session = field(default_factory=Session)
+
     request: Request = field(default_factory=Request)
     readiness: Readiness = field(default_factory=Readiness)
     handoff: Handoff = field(default_factory=Handoff)
     audit: Audit = field(default_factory=Audit)
 
+    # ✅ This keeps your CLI working (cli.py calls result.to_dict())
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
