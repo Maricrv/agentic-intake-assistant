@@ -56,7 +56,7 @@
           "allowed": ["yes", "no", "partial"]
         },
         "location": { "type": "text" },
-        "deadline_urgency": {
+        "urgency": {
           "type": "enum",
           "allowed": ["urgent", "flexible"]
         },
@@ -85,8 +85,8 @@
         },
         {
           "field": "residency_status",
-          "question": "What is your residency status for tax purposes? (resident / non_resident / newcomer / unsure)",
-          "normalize": "text"
+          "question": "For tax purposes, what is your residency status in Canada? (resident / non_resident / newcomer / unsure)\nIf you're not sure, type 'unsure'.",
+          "normalize": "residency"
         },
         {
           "field": "location",
@@ -94,7 +94,7 @@
           "normalize": "text"
         },
         {
-          "field": "deadline_urgency",
+          "field": "urgency",
           "question": "Is this urgent or flexible? (urgent/flexible)",
           "normalize": "urgency"
         },
@@ -337,14 +337,110 @@
           "normalize": "text"
         }
       ]
+    },
+    {
+      "id": "neosublime_gift_request",
+      "label": "NeoSublime – Personalized gift request",
+      "priority": 70,
+      "request_type": "service_request",
+      "service_category": "gift_personalization",
+      "opening_message": "I can help you create a personalized gift. I’ll ask a few questions to understand what you want.\n",
+      "match": {
+        "keywords_any": [
+          "gift",
+          "present",
+          "custom",
+          "personalized",
+          "mug",
+          "tshirt",
+          "t-shirt",
+          "frame",
+          "photo",
+          "sublimation",
+          "birthday",
+          "anniversary",
+          "valentine",
+          "mother",
+          "father"
+        ]
+      },
+      "fields": {
+        "recipient": { "type": "text" },
+        "occasion": {
+          "type": "enum",
+          "allowed": ["birthday", "anniversary", "valentine", "mother_day", "father_day", "christmas", "other"]
+        },
+        "product_type": {
+          "type": "enum",
+          "allowed": ["mug", "tshirt", "frame", "keychain", "plaque", "other"]
+        },
+        "personalization_text": { "type": "text" },
+        "delivery_date": { "type": "text" },
+        "urgency": { "type": "enum", "allowed": ["urgent", "flexible"] },
+        "location": { "type": "text" }
+      },
+      "flow": [
+        {
+          "field": "issue_description",
+          "question": "Tell me briefly what kind of gift you want.",
+          "normalize": "text"
+        },
+        {
+          "field": "recipient",
+          "question": "Who is this gift for? (e.g., mom, partner, friend, coworker)",
+          "normalize": "text"
+        },
+        {
+          "field": "occasion",
+          "question": "What is the occasion? (birthday / anniversary / Valentine’s / Mother’s Day / other)",
+          "normalize": "text"
+        },
+        {
+          "field": "product_type",
+          "question": "What type of product would you like? (mug / t-shirt / frame / keychain / other)",
+          "normalize": "text"
+        },
+        {
+          "field": "personalization_text",
+          "question": "What message, name, or text should appear on the product?",
+          "normalize": "text"
+        },
+        {
+          "field": "delivery_date",
+          "question": "When do you need the gift ready by? (date or description)",
+          "normalize": "text"
+        },
+        {
+          "field": "urgency",
+          "question": "Is this urgent or flexible?",
+          "normalize": "urgency"
+        },
+        {
+          "field": "location",
+          "question": "Where should the gift be delivered or picked up?",
+          "normalize": "text"
+        },
+        {
+          "field": "constraints",
+          "question": "Any extra notes? (colors, style, budget, packaging, etc.)",
+          "normalize": "text"
+        }
+      ]
     }
+
   ],
 
   "normalizers": {
     "service_type": {},
     "urgency": {
-      "urgent": ["urgent", "asap", "immediately", "right away", "high", "critical"],
-      "flexible": ["flexible", "not urgent", "whenever", "low", "normal"]
+      "urgent": ["urgent", "urge", "asap", "immediately", "right away", "high", "critical"],
+      "flexible": ["flexible", "flex", "not urgent", "whenever", "low", "normal"]
+    },
+    "residency": {
+      "resident": ["resident", "residency", "i live in canada", "live in canada", "canada resident"],
+      "non_resident": ["non resident", "non_resident", "outside canada", "live abroad", "not in canada"],
+      "newcomer": ["newcomer", "new immigrant", "new to canada", "recently moved"],
+      "unsure": ["unsure", "not sure", "dont know", "don't know", "citizen", "citizenship", "canadian citizen", "canada citizen"]
     },
     "timeline": {
       "within_24h": ["within 24 hours", "24 hours", "today", "tomorrow", "24h"],
@@ -360,5 +456,5 @@
     "model": "gpt-5",
     "reasoning_effort": "low"
   }
+  
 }
-
